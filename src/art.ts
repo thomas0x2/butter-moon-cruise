@@ -71,6 +71,13 @@ const SKINS = [['#f1c27d', '#d9a066'], ['#c68642', '#a0652d'], ['#8d5524', '#6b3
 const HAIRS = ['#2b1b10', '#5a3825', '#c9a14a', '#b5b5b5', '#a8461f', '#121212'];
 const TOPS: Look['top'][] = ['short', 'bun', 'sunhat'];
 
+const BASE_PAL: Palette = { k: '#1d1d2b', w: '#ff7a59', g: '#d4573a', r: '#fff6d6', b: '#c8b38a', s: '#f1c27d', S: '#d9a066', h: '#5a3825', e: '#222233', y: '#e8cf7a' };
+
+/** A named character's look: base palette with a few overrides. */
+export function makeLook(top: Look['top'], pal: Palette, pattern = false): Look {
+  return { top, pattern, pal: { ...BASE_PAL, ...pal } };
+}
+
 export function randomLook(rand: () => number): Look {
   const pick = <T,>(a: T[]) => a[Math.floor(rand() * a.length)];
   const [w, g] = pick(SHIRTS);
@@ -171,6 +178,7 @@ const ICONS: Record<string, [string[], Palette]> = {
   salade: [BOWL, { c: '#e53935', x: '#b06a8a', b: '#d39b5b', k: '#5a3a1a' }],
   aioli: [['........', '........', '..yyyy..', '.yyWyyy.', 'bbbbbbbb', 'bBbbBbbb', '.bbbbbb.', '........'],
     { y: '#fff3c4', W: '#ffffff', b: '#d99a4e', B: '#f2c27a' }],
+  slop: [BOWL, { c: '#8a7a5c', x: '#6b5a3a', b: '#9aa4ae', k: '#4a5058' }],
   burnt: [['.s..s...', '..s..s..', '.s.s....', '..kkkk..', '.kdkddk.', 'kddkdddk', '.kkkkkk.', '........'],
     { k: '#111111', d: '#3a3a3a', s: '#9a9a9a' }],
 };
@@ -231,6 +239,24 @@ export function floorSprite(kind: Floor, tx: number, ty: number, t = 0): HTMLCan
         const h = hash2(Math.floor((c + (row % 2) * 3) / 6) + tx * 3, row + ty * 4);
         return h < 0.3 ? '#cbb89a' : h < 0.6 ? '#d6c4a6' : '#c2ae8e';
       });
+      break;
+    case 'marble':
+      cv = floorTile((c, r) => {
+        if (c === 0 || r === 0) return '#b8ad96';
+        const dark = ((tx + ty) & 1) === 1;
+        if ((c + r) % 11 === 0) return dark ? '#d6cbb2' : '#f3ecdc';
+        return dark ? '#e3d8c0' : '#fbf6ea';
+      });
+      break;
+    case 'cabin':
+      cv = floorTile((c, r) => {
+        if (c % 8 === 7) return '#5a3a1e';
+        const plank = c >> 3;
+        return (r + plank * 5) % 16 === 0 ? '#6b4a2a' : plank % 2 ? '#8a5a32' : '#7a5230';
+      });
+      break;
+    case 'stairs':
+      cv = floorTile((_c, r) => (r % 4 === 3 ? '#6b4a2a' : r % 4 === 0 ? '#e0b07a' : '#c9955d'));
       break;
     case 'roof':
       cv = floorTile((c, r) => {
@@ -297,7 +323,7 @@ const STALL_LOOK: Record<string, { awning: string; goods: string[] }> = {
   A: { awning: '#2d6fb0', goods: ['#d9826b', '#2f3658', '#cfe3f5'] },
   P: { awning: '#3f8f3f', goods: ['#e53935', '#3f8f3f', '#b06a8a', '#ffe14a', '#c9955d'] },
   E: { awning: '#e8741c', goods: ['#e8541c', '#b5b830', '#f7f2e8', '#5c8f3a'] },
-  D: { awning: '#c8323e', goods: ['#f5d36a', '#d99a4e', '#fbf3e4', '#ffe066'] },
+  Y: { awning: '#c8323e', goods: ['#f5d36a', '#d99a4e', '#fbf3e4', '#ffe066'] },
 };
 
 const propCache = new Map<string, Sprite>();
@@ -413,7 +439,7 @@ export function propSprite(ch: string): Sprite | null {
     case 'A':
     case 'P':
     case 'E':
-    case 'D': {
+    case 'Y': {
       const look = STALL_LOOK[ch];
       s = prop((g, x, y) => {
         drawBlock(g, x, y + 4, 16, 12, 9, WOOD);
@@ -477,6 +503,90 @@ export function propSprite(ch: string): Sprite | null {
         for (let i = 0; i < 40; i += 3) rect(g, '#9aa6b2', x + 3, y - 24 + i, 10, 2);
         rect(g, '#e8452c', x + 1, y - 24, 1, 40);
         rect(g, '#e8452c', x + 14, y - 24, 1, 40);
+      });
+      break;
+    case 'X':
+      s = prop((g, x, y) => {
+        drawBlock(g, x, y + 3, 16, 13, 10, { top: '#d8dde3', front: '#9aa6b2', edge: '#ffffff', base: '#5b6672' });
+        rect(g, '#ffcf4a', x + 2, y - 8, 12, 1); // heat lamp glow
+        rect(g, '#5b6672', x + 1, y - 26, 14, 2);
+        rect(g, '#e8452c', x + 4, y - 24, 2, 2);
+        rect(g, '#e8452c', x + 10, y - 24, 2, 2);
+      });
+      break;
+    case 'Q':
+      s = prop((g, x, y) => {
+        drawBlock(g, x, y + 4, 16, 12, 12, { top: '#e3b54a', front: '#7a4a2a', edge: '#ffe9a8', base: '#3a2412' });
+        rect(g, '#c9a14a', x, y + 9, 16, 1);
+      });
+      break;
+    case 'f':
+      s = prop((g, x, y) => {
+        drawBlock(g, x + 4, y + 9, 8, 6, 7, { top: '#5a3a1e', front: '#c4643a', edge: '#e08a5a' });
+        for (const [dx, dy, w] of [[1, -12, 6], [9, -12, 6], [3, -16, 10], [5, -20, 6], [0, -8, 5], [11, -8, 5]]) rect(g, dy < -14 ? '#7cb85a' : '#3f8f3f', x + dx, y + dy, w, 3);
+        rect(g, '#5a3a1e', x + 7, y - 6, 2, 9);
+      });
+      break;
+    case 'K':
+      s = prop((g, x, y) => {
+        drawBlock(g, x, y + 2, 16, 14, 7, { top: '#f4f4f0', front: '#8a5a32', edge: '#ffffff' });
+        rect(g, '#ffffff', x + 3, y - 4, 10, 4);
+        rect(g, '#d8dde3', x + 3, y, 10, 1);
+        rect(g, '#6b4a2a', x, y - 12, 16, 8);
+      });
+      break;
+    case 'b':
+      s = prop((g, x, y) => drawBlock(g, x, y, 16, 14, 7, { top: '#3f6fb0', front: '#8a5a32', edge: '#7fa6d9' }));
+      break;
+    case 'j':
+      s = prop((g, x, y) => {
+        drawBlock(g, x + 1, y + 4, 14, 11, 10, WOOD);
+        rect(g, '#f7f2e8', x + 4, y - 4, 6, 4);
+        rect(g, '#2b3a55', x + 11, y - 5, 1, 4);
+      });
+      break;
+    case 'J':
+      s = prop((g, x, y) => {
+        drawBlock(g, x, y + 2, 16, 14, 12, { top: '#c9955d', front: '#2d6fb0', edge: '#e0b07a', base: '#16365a' });
+        rect(g, '#f4f7fa', x, y + 6, 16, 1);
+        rect(g, '#8fd06a', x + 5, y - 13, 3, 4);
+        rect(g, '#ff9e94', x + 10, y - 12, 2, 3);
+      });
+      break;
+    case 'i':
+      s = prop((g, x, y) => {
+        rect(g, '#6b7682', x + 7, y + 6, 2, 8);
+        drawBlock(g, x + 4, y + 4, 8, 6, 2, { top: '#c8323e', front: '#8a2030' });
+      });
+      break;
+    case 'u':
+      s = prop((g, x, y) => {
+        rect(g, 'rgba(0,0,0,0.2)', x - 2, y + 12, 20, 4);
+        drawBlock(g, x - 2, y + 4, 20, 12, 34, { top: '#1d1d2b', front: '#d63a3a', edge: '#3a3f55', base: '#8a2020' });
+        rect(g, '#f4f7fa', x - 2, y - 8, 20, 4);
+        rect(g, '#1d1d2b', x - 2, y - 28, 20, 4);
+        rect(g, '#e8b84a', x + 4, y - 2, 8, 8);
+      });
+      break;
+    case 'v':
+      s = prop((g, x, y) => {
+        drawBlock(g, x + 1, y + 2, 14, 14, 16, { top: '#3d4650', front: '#c4643a', edge: '#e08a5a', base: '#3a2412' });
+        rect(g, '#2b1b10', x + 3, y + 3, 10, 7);
+        rect(g, '#ff9b3d', x + 4, y + 7, 8, 2);
+        rect(g, '#ffcf4a', x + 5, y + 8, 6, 1);
+        rect(g, '#e3b54a', x + 3, y + 1, 10, 1);
+        rect(g, '#5b6672', x + 6, y - 22, 4, 8);
+      });
+      break;
+    case 'z':
+      s = prop((g, x, y) => {
+        drawBlock(g, x + 3, y + 6, 10, 9, 4, { top: '#5b6672', front: '#3d4650', edge: '#8f9aa6' });
+        drawBlock(g, x + 2, y + 4, 12, 9, 10, { top: '#2b3138', front: '#56606b', edge: '#8f9aa6', base: '#2b3138' });
+        rect(g, '#8a7a3a', x + 3, y - 5, 10, 6);
+        rect(g, '#a89a4a', x + 5, y - 4, 2, 1);
+        rect(g, '#a89a4a', x + 9, y - 2, 2, 1);
+        rect(g, '#2b3138', x + 1, y - 1, 1, 3);
+        rect(g, '#2b3138', x + 14, y - 1, 1, 3);
       });
       break;
     case 'o':

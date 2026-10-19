@@ -1,18 +1,19 @@
 // Game state and rules for one leg of the cruise:
-// Marseille market -> menu planning on board -> dinner service -> arrival in Naples.
+// Marseille market -> afternoon aboard (roam, talk, plan the menu, hire staff) -> dinner service -> Naples.
 
 import { CHEF_LOOK, randomLook, type Dir, type Item, type Look } from './art';
 import {
-  BASKET_SIZE, BUDGET, BURNT, ingredient, INGREDIENTS, isSubset, matchRecipe, MENU_SIZE, nameOf, NEXT_PORT, recipe,
-  RECIPES, STALLS, type Recipe, type StallId,
+  BASKET_SIZE, BUDGET, BURNT, ingredient, INGREDIENTS, isSubset, machineLevel, matchRecipe, MENU_SIZE, nameOf, NEXT_PORT, recipe,
+  RECIPES, SLOP, STALLS, UPGRADES, type Machine, type Recipe, type StallId,
 } from './data';
-import { charAt, isSolid, MARKET, SHIP, type TileMap } from './map';
+import { CABIN, charAt, doorAt, GALLEY, isSolid, LOBBY, MAPS, MARKET, type Door, type MapId, type TileMap } from './map';
+import { MERCHANT_LOOKS, NPCS, STAFF_OPTIONS, type NpcDef, type StaffOption } from './npcs';
 import { sfx } from './sound';
 
-export type Phase = 'title' | 'market' | 'prep' | 'service' | 'summary' | 'arrival';
+export type Phase = 'title' | 'market' | 'afternoon' | 'service' | 'summary' | 'arrival';
 
 export interface Station {
-  kind: 'stove' | 'board';
+  kind: Machine;
   tx: number;
   ty: number;
   items: Item[];
@@ -20,35 +21,52 @@ export interface Station {
   t: number;
   result: Item | null;
   doneT: number;
+  /** seconds this batch takes, after upgrades */
+  dur: number;
 }
 
-export interface Seat {
-  tx: number;
-  ty: number;
-  face: Dir;
-  guest: Guest | null;
-}
-
-export interface Guest {
-  seat: Seat;
-  look: Look;
-  order: Recipe;
-  patience: number;
-  maxPatience: number;
-  state: 'waiting' | 'eating' | 'leaving';
-  t: number;
-}
-
-export interface Walker {
+export interface Npc {
+  def: NpcDef;
   x: number;
   y: number;
-  look: Look;
   dir: Dir;
   tx: number;
   ty: number;
   wait: number;
   anim: number;
   moving: boolean;
+}
+
+export interface Ticket {
+  id: number;
+  dish: string;
+  table: number;
+  patience: number;
+  max: number;
+  state: 'pending' | 'open' | 'taken' | 'done' | 'missed';
+  /** what actually went out, and how fresh the ticket still was */
+  served?: string;
+  freshness?: number;
+}
+
+export interface PassSlot {
+  tx: number;
+  dish: Item | null;
+  claimed: boolean;
+}
+
+export interface Waiter {
+  name: string;
+  look: Look;
+  x: number;
+  y: number;
+  homeX: number;
+  dir: Dir;
+  anim: number;
+  moving: boolean;
+  task: null | { kind: 'drop'; ticket: Ticket } | { kind: 'pickup'; slot: PassSlot; ticket: Ticket };
+  stage: 'off' | 'going' | 'back';
+  carrying: Item | null;
 }
 
 export interface Floater {
@@ -70,32 +88,51 @@ export interface MenuRow {
 }
 
 export interface Modal {
+  kind: 'list' | 'shop' | 'talk';
   title: string;
   subtitle: () => string;
   rows: () => MenuRow[];
   index: number;
+  /** shop and talk: who is speaking and what they say */
+  speaker?: string;
+  look?: Look;
+  line?: () => string;
 }
 
 export type Target =
   | { kind: 'pantry'; tx: number; ty: number }
   | { kind: 'station'; tx: number; ty: number; station: Station }
   | { kind: 'bin'; tx: number; ty: number }
-  | { kind: 'guest'; tx: number; ty: number; guest: Guest }
+  | { kind: 'pass'; tx: number; ty: number; slot: PassSlot }
   | { kind: 'stall'; tx: number; ty: number; stall: StallId }
   | { kind: 'gangway'; tx: number; ty: number }
-  | { kind: 'board'; tx: number; ty: number };
+  | { kind: 'locked'; tx: number; ty: number; text: string }
+  | { kind: 'board'; tx: number; ty: number }
+  | { kind: 'catalog'; tx: number; ty: number }
+  | { kind: 'npc'; tx: number; ty: number; npc: Npc };
 
-const STALL_CHARS: Record<string, StallId> = { A: 'fish', P: 'produce', E: 'epicerie', D: 'dairy' };
+export interface Rating {
+  stars: number;
+  menu: number;
+  speed: number;
+  completion: number;
+  staff: number;
+}
+
+const STALL_CHARS: Record<string, StallId> = { A: 'fish', P: 'produce', E: 'epicerie', Y: 'dairy' };
 const PANTRY_CHARS = new Set(['F', 'M', 'U', 'V', 'O']);
 const BURN_AFTER = 8;
+const STRIP_Y = [1.7, 2.5];
+const PASS_Y = 2.6;
 
 export const MARKET_OPEN = 8 * 60;
-export const PREP_TIME = 17 * 60;
+export const AFTERNOON = 13 * 60;
+const AFTERNOON_CAP = 17 * 60 + 55;
 export const SERVICE_START = 18 * 60;
 export const SERVICE_END = 23 * 60;
 const LAST_SEATING = 22 * 60 + 15;
-const SERVICE_MINUTES_PER_SECOND = 1.5; // dinner lasts a little over three real minutes
-const MARKET_MINUTES_PER_SECOND = 0.5;
+const MINUTES_PER_SECOND: Partial<Record<Phase, number>> = { market: 0.5, afternoon: 2, service: 1.5 };
+const MAX_TICKETS = 6;
 
 const rand = Math.random;
 
@@ -113,13 +150,18 @@ export class Game {
 
   // world
   map: TileMap = MARKET;
+  npcs: Npc[] = [];
   stations: Station[] = [];
-  seats: Seat[] = [];
-  walkers: Walker[] = [];
+  pass: PassSlot[] = [];
+  tickets: Ticket[] = [];
+  waiters: Waiter[] = [];
   floaters: Floater[] = [];
   toasts: { text: string; t: number }[] = [];
   target: Target | null = null;
   modal: Modal | null = null;
+  /** door transition: fades out, swaps rooms, fades in */
+  warp: { door: Door; t: number; swapped: boolean } | null = null;
+  roomBanner = 0;
 
   // the leg's economy
   phase: Phase = 'title';
@@ -131,37 +173,41 @@ export class Game {
   known = new Set<string>();
   menu: string[] = [];
   picks: string[] = [];
+  staff: StaffOption = STAFF_OPTIONS[0];
+  owned = new Set<string>();
   spent = 0;
   earned = 0;
   served = 0;
   missed = 0;
+  grumbles = 0;
+  rating: Rating | null = null;
   spawnIn = 3;
   closingIn = -1;
+  nextTicket = 1;
+  shopLine = '';
   time = 0;
 
   constructor() {
-    for (let ty = 0; ty < SHIP.h; ty++) {
-      for (let tx = 0; tx < SHIP.w; tx++) {
-        const c = charAt(SHIP, tx, ty);
-        if (c === 'S' || c === 'C') {
-          this.stations.push({ kind: c === 'S' ? 'stove' : 'board', tx, ty, items: [], recipe: null, t: 0, result: null, doneT: 0 });
-        } else if (c === 'h') {
-          this.seats.push({ tx, ty, face: charAt(SHIP, tx + 1, ty) === 'T' ? 'right' : 'left', guest: null });
-        }
+    for (let ty = 0; ty < GALLEY.h; ty++) {
+      for (let tx = 0; tx < GALLEY.w; tx++) {
+        const c = charAt(GALLEY, tx, ty);
+        const kind: Machine | null = c === 'S' ? 'stove' : c === 'C' ? 'board' : c === 'z' ? 'pot' : c === 'v' ? 'oven' : null;
+        if (kind) this.stations.push({ kind, tx, ty, items: [], recipe: null, t: 0, result: null, doneT: 0, dur: 1 });
+        if (c === 'X') this.pass.push({ tx, dish: null, claimed: false });
       }
     }
-    this.enterMarket();
+    this.enterMap(MARKET, 13.5, 10.5, 'up');
   }
 
   // ------------------------------------------------------------ helpers
 
   toast(text: string) {
-    this.toasts.push({ text, t: 2.6 });
+    this.toasts.push({ text, t: 2.8 });
     if (this.toasts.length > 3) this.toasts.shift();
   }
 
   float(x: number, y: number, text: string, color: string) {
-    this.floaters.push({ x, y, text, color, t: 1.4 });
+    this.floaters.push({ x, y, text, color, t: 1.6 });
   }
 
   count(id: string) {
@@ -180,6 +226,10 @@ export class Game {
     else this.stock.delete(id);
   }
 
+  get roaming() {
+    return this.phase === 'market' || this.phase === 'afternoon' || this.phase === 'service';
+  }
+
   blocked(x: number, y: number, r: number): boolean {
     for (let ty = Math.floor(y - r); ty <= Math.floor(y + r); ty++) {
       for (let tx = Math.floor(x - r); tx <= Math.floor(x + r); tx++) {
@@ -192,40 +242,59 @@ export class Game {
     return false;
   }
 
-  private spawnWalkers(spots: [number, number][]) {
-    this.walkers = spots.map(([sx, sy]) => ({
-      x: sx + 0.5, y: sy + 0.5, look: randomLook(rand), dir: 'down' as Dir, tx: sx + 0.5, ty: sy + 0.5, wait: rand() * 3, anim: 0, moving: false,
+  // ------------------------------------------------------------ rooms
+
+  private enterMap(m: TileMap, x: number, y: number, dir: Dir) {
+    this.map = m;
+    this.x = x;
+    this.y = y;
+    this.dir = dir;
+    this.faceX = dir === 'left' ? -1 : dir === 'right' ? 1 : 0;
+    this.faceY = dir === 'up' ? -1 : dir === 'down' ? 1 : 0;
+    this.roomBanner = 2.2;
+    const onShip = m !== MARKET;
+    const defs = NPCS.filter((n) => n.map === m.id && !(this.phase === 'service' && n.map === 'restaurant'));
+    const extras: NpcDef[] = [];
+    const crowd = m.id === 'market' ? 4 : m.id === 'lido' ? 3 : m.id === 'lobby' ? 1 : 0;
+    for (let i = 0; i < crowd; i++) {
+      const spot = this.freeSpot(m);
+      if (spot) extras.push({ name: onShip ? 'Passenger' : 'Local', map: m.id, x: spot[0], y: spot[1], stroll: true, look: randomLook(rand), lines: [pick(onShip ? PASSENGER_LINES : LOCAL_LINES)] });
+    }
+    this.npcs = [...defs, ...extras].map((def) => ({
+      def, x: def.x, y: def.y, dir: def.facing ?? 'down', tx: def.x, ty: def.y, wait: rand() * 3, anim: 0, moving: false,
     }));
   }
 
-  // ------------------------------------------------------------ scene changes
+  private freeSpot(m: TileMap): [number, number] | null {
+    for (let i = 0; i < 40; i++) {
+      const tx = 1 + Math.floor(rand() * (m.w - 2));
+      const ty = 1 + Math.floor(rand() * (m.h - 2));
+      if (charAt(m, tx, ty) === m.strollOn) return [tx + 0.5, ty + 0.5];
+    }
+    return null;
+  }
 
-  private enterMarket() {
-    this.map = MARKET;
-    this.x = 13.5;
-    this.y = 10.5;
-    this.dir = 'up';
-    this.faceX = 0;
-    this.faceY = -1;
-    this.clock = MARKET_OPEN;
-    this.spawnWalkers([[4, 10], [12, 6], [19, 10], [24, 6], [28, 9], [8, 6]]);
+  private useDoor(door: Door) {
+    if (this.phase === 'service' && this.map === GALLEY) {
+      this.toast('Service is on! Stay in the galley; the waiters handle the dining room.');
+      return false;
+    }
+    this.warp = { door, t: 0, swapped: false };
+    sfx('place');
+    return true;
   }
 
   private board() {
-    this.map = SHIP;
-    this.phase = 'prep';
-    this.clock = PREP_TIME;
-    this.x = 9.5;
-    this.y = 4.5;
-    this.dir = 'up';
-    this.faceX = 0;
-    this.faceY = -1;
+    this.phase = 'afternoon';
+    this.clock = AFTERNOON;
     this.hands = null;
     this.modal = null;
-    this.spawnWalkers([[5, 9], [17, 8], [26, 7], [12, 12]]);
-    this.toast('All aboard! Plan tonight\'s dinner menu at the chalkboard.');
+    this.enterMap(LOBBY, 10.9, 10.3, 'up');
+    this.toast('All aboard! You have the afternoon. Dinner is at 6 in the galley.');
     sfx('start');
   }
+
+  // ------------------------------------------------------------ service lifecycle
 
   private openService() {
     this.phase = 'service';
@@ -233,15 +302,40 @@ export class Game {
     this.modal = null;
     this.spawnIn = 2;
     this.closingIn = -1;
-    this.toast('The dining room is open. Bon appetit!');
+    this.tickets = [];
+    this.waiters = this.staff.crew.map((c, i) => ({
+      name: c.name, look: c.look, x: i ? 18.6 : 1.4, y: STRIP_Y[i % 2], homeX: i ? 18.6 : 1.4,
+      dir: 'down' as Dir, anim: 0, moving: false, task: null, stage: 'off' as const, carrying: null,
+    }));
+    this.toast('Doors are open. Tickets will come in at the pass.');
     sfx('bell');
   }
 
   private endService() {
     this.phase = 'summary';
     this.modal = null;
-    for (const s of this.seats) s.guest = null;
+    for (const t of this.tickets) {
+      if (t.state !== 'open' && t.state !== 'pending') continue;
+      t.state = 'missed';
+      this.missed++;
+    }
+    this.rating = this.rate();
     sfx('start');
+  }
+
+  rate(): Rating {
+    const done = this.tickets.filter((t) => t.state === 'done');
+    const total = done.length + this.tickets.filter((t) => t.state === 'missed').length;
+    const real = done.filter((t) => t.served !== SLOP.id);
+    const dishQuality = done.length ? real.reduce((s, t) => s + Math.min(1, (0.5 + recipe(t.served!)!.price / 90) * this.quality(t.served!)), 0) / done.length : 0;
+    const variety = new Set(real.map((t) => t.served)).size / MENU_SIZE;
+    const menu = 0.65 * dishQuality + 0.35 * Math.min(1, variety);
+    const speed = done.length ? done.reduce((s, t) => s + (t.freshness ?? 0), 0) / done.length : 0;
+    const completion = total ? done.length / total : 0;
+    const staff = this.staff.skill / 5;
+    const score = total ? 0.3 * menu + 0.25 * speed + 0.25 * completion + 0.2 * staff : 0;
+    const stars = Math.max(1, Math.min(5, Math.round((1 + 4 * score) * 2) / 2));
+    return { stars, menu, speed, completion, staff };
   }
 
   private reset() {
@@ -250,19 +344,27 @@ export class Game {
     this.known.clear();
     this.menu = [];
     this.picks = [];
-    this.spent = this.earned = this.served = this.missed = 0;
+    this.staff = STAFF_OPTIONS[0];
+    this.owned.clear();
+    this.spent = this.earned = this.served = this.missed = this.grumbles = 0;
+    this.rating = null;
+    this.tickets = [];
+    this.waiters = [];
     this.hands = null;
     this.port = 'Marseille';
     this.day = 1;
+    this.clock = MARKET_OPEN;
     for (const s of this.stations) Object.assign(s, { items: [], recipe: null, t: 0, result: null, doneT: 0 });
-    this.enterMarket();
+    for (const p of this.pass) Object.assign(p, { dish: null, claimed: false });
     this.phase = 'market';
+    this.enterMap(MARKET, 13.5, 10.5, 'up');
   }
 
   // ------------------------------------------------------------ update
 
   update(dt: number, ix: number, iy: number) {
     this.time += dt;
+    this.roomBanner = Math.max(0, this.roomBanner - dt);
     for (const f of this.floaters) {
       f.t -= dt;
       f.y -= dt * 0.4;
@@ -270,24 +372,44 @@ export class Game {
     this.floaters = this.floaters.filter((f) => f.t > 0);
     for (const t of this.toasts) t.t -= dt;
     this.toasts = this.toasts.filter((t) => t.t > 0);
-    this.updateWalkers(dt);
-    if (this.phase !== 'market' && this.phase !== 'prep' && this.phase !== 'service') return;
+    this.updateNpcs(dt);
+    if (this.warp) return this.updateWarp(dt);
+    if (!this.roaming) return;
+
+    const rate = MINUTES_PER_SECOND[this.phase] ?? 0;
+    if (this.phase === 'market') this.clock = Math.min(12 * 60, this.clock + dt * rate);
+    if (this.phase === 'afternoon') {
+      const before = this.clock;
+      this.clock = Math.min(AFTERNOON_CAP, this.clock + dt * rate);
+      if (before < 17 * 60 + 30 && this.clock >= 17 * 60 + 30) this.toast('Half an hour to dinner. Head to the galley chalkboard.');
+    }
 
     if (!this.modal) this.moveChef(dt, ix, iy);
     else this.moving = false;
     this.target = this.modal ? null : this.findTarget();
 
-    if (this.phase === 'market') this.clock = Math.min(12 * 60, this.clock + dt * MARKET_MINUTES_PER_SECOND);
     if (this.phase === 'service') {
-      this.clock += dt * SERVICE_MINUTES_PER_SECOND;
+      this.clock += dt * rate;
       this.updateStations(dt);
-      this.updateGuests(dt);
+      this.updateTickets(dt);
+      this.updateWaiters(dt);
       if (this.clock >= SERVICE_END) this.endService();
       else if (this.closingIn > 0) {
         this.closingIn -= dt;
         if (this.closingIn <= 0) this.endService();
       }
     }
+  }
+
+  private updateWarp(dt: number) {
+    const w = this.warp!;
+    w.t += dt;
+    this.moving = false;
+    if (!w.swapped && w.t >= 0.25) {
+      w.swapped = true;
+      this.enterMap(MAPS[w.door.to as MapId], w.door.sx, w.door.sy, w.door.dir);
+    }
+    if (w.t >= 0.5) this.warp = null;
   }
 
   private moveChef(dt: number, ix: number, iy: number) {
@@ -306,42 +428,59 @@ export class Game {
     this.dir = ix > 0 ? 'right' : ix < 0 ? 'left' : iy < 0 ? 'up' : 'down';
     const speed = 4 * dt;
     const r = 0.28;
-    if (!this.blocked(this.x + wx * speed, this.y, r)) this.x += wx * speed;
-    if (!this.blocked(this.x, this.y + wy * speed, r)) this.y += wy * speed;
+    const px = this.x;
+    const py = this.y;
+    if (!this.blocked(this.x + wx * speed, this.y, r) && !this.bumpsNpc(this.x + wx * speed, this.y)) this.x += wx * speed;
+    if (!this.blocked(this.x, this.y + wy * speed, r) && !this.bumpsNpc(this.x, this.y + wy * speed)) this.y += wy * speed;
     this.anim += dt;
+    const door = doorAt(this.map, Math.floor(this.x), Math.floor(this.y));
+    if (door && !this.useDoor(door)) {
+      this.x = px;
+      this.y = py;
+    }
   }
 
-  private updateWalkers(dt: number) {
-    for (const w of this.walkers) {
-      if (w.wait > 0) {
-        w.wait -= dt;
-        w.moving = false;
-        if (w.wait <= 0) {
-          w.tx = w.x + (rand() - 0.5) * 8;
-          w.ty = w.y + (rand() - 0.5) * 6;
+  private bumpsNpc(x: number, y: number) {
+    return this.npcs.some((n) => Math.hypot(n.x - x, n.y - y) < 0.55 && Math.hypot(n.x - this.x, n.y - this.y) >= Math.hypot(n.x - x, n.y - y));
+  }
+
+  private updateNpcs(dt: number) {
+    const talking = this.modal?.kind === 'talk' ? this.modal.speaker : null;
+    for (const n of this.npcs) {
+      if (talking === n.def.name) {
+        n.moving = false;
+        continue;
+      }
+      if (!n.def.stroll) continue;
+      if (n.wait > 0) {
+        n.wait -= dt;
+        n.moving = false;
+        if (n.wait <= 0) {
+          n.tx = n.x + (rand() - 0.5) * 8;
+          n.ty = n.y + (rand() - 0.5) * 6;
         }
         continue;
       }
-      const dx = w.tx - w.x;
-      const dy = w.ty - w.y;
+      const dx = n.tx - n.x;
+      const dy = n.ty - n.y;
       const d = Math.hypot(dx, dy);
       if (d < 0.1) {
-        w.wait = 1 + rand() * 4;
+        n.wait = 1 + rand() * 4;
         continue;
       }
-      const sp = Math.min(d, 1.3 * dt);
-      const nx = w.x + (dx / d) * sp;
-      const ny = w.y + (dy / d) * sp;
+      const sp = Math.min(d, 1.2 * dt);
+      const nx = n.x + (dx / d) * sp;
+      const ny = n.y + (dy / d) * sp;
       const tile = charAt(this.map, Math.floor(nx), Math.floor(ny));
-      if (this.blocked(nx, ny, 0.3) || tile !== this.map.strollOn || Math.hypot(nx - this.x, ny - this.y) < 0.6) {
-        w.wait = 0.5 + rand();
+      if (this.blocked(nx, ny, 0.3) || tile !== this.map.strollOn || Math.hypot(nx - this.x, ny - this.y) < 0.7) {
+        n.wait = 0.5 + rand();
         continue;
       }
-      w.x = nx;
-      w.y = ny;
-      w.moving = true;
-      w.anim += dt;
-      w.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
+      n.x = nx;
+      n.y = ny;
+      n.moving = true;
+      n.anim += dt;
+      n.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
     }
   }
 
@@ -349,7 +488,7 @@ export class Game {
     for (const s of this.stations) {
       if (s.recipe) {
         s.t += dt;
-        if (s.t >= s.recipe.time) {
+        if (s.t >= s.dur) {
           s.result = s.recipe.id;
           s.recipe = null;
           s.items = [];
@@ -367,7 +506,9 @@ export class Game {
     }
   }
 
-  /** Menu dishes that can still be cooked once every waiting guest's order is accounted for. */
+  // ------------------------------------------------------------ tickets and waiters
+
+  /** Menu dishes that can still be cooked once every outstanding ticket is accounted for. */
   orderable(): Recipe[] {
     const left = new Map(this.stock);
     const give = (id: string) => left.set(id, (left.get(id) ?? 0) + 1);
@@ -379,71 +520,166 @@ export class Game {
       if (s.recipe) ready.push(s.recipe.id);
       if (s.result && s.result !== BURNT) ready.push(s.result);
     }
-    for (const seat of this.seats) {
-      const g = seat.guest;
-      if (!g || g.state !== 'waiting') continue;
-      const i = ready.indexOf(g.order.id);
+    for (const p of this.pass) if (p.dish && !p.claimed) ready.push(p.dish);
+    for (const t of this.tickets) {
+      if (t.state !== 'open' && t.state !== 'pending') continue;
+      const i = ready.indexOf(t.dish);
       if (i >= 0) {
         ready.splice(i, 1);
         continue;
       }
-      for (const id of g.order.inputs) left.set(id, (left.get(id) ?? 0) - 1);
+      for (const id of recipe(t.dish)?.inputs ?? []) left.set(id, (left.get(id) ?? 0) - 1);
     }
-    for (const id of ready) for (const inp of recipe(id)!.inputs) give(inp);
+    for (const id of ready) for (const inp of recipe(id)?.inputs ?? []) give(inp);
     return this.menu.map((id) => recipe(id)!).filter((r) => r.inputs.every((id) => (left.get(id) ?? 0) > 0));
   }
 
-  private updateGuests(dt: number) {
-    const seated = this.seats.filter((s) => s.guest).length;
+  private outstanding() {
+    return this.tickets.filter((t) => t.state === 'open' || t.state === 'pending' || t.state === 'taken');
+  }
+
+  private updateTickets(dt: number) {
     this.spawnIn -= dt;
+    const open = this.tickets.filter((t) => t.state === 'open' || t.state === 'pending').length;
     if (this.spawnIn <= 0 && this.clock < LAST_SEATING && this.closingIn < 0) {
       const options = this.orderable();
-      const free = this.seats.filter((s) => !s.guest);
-      if (options.length && free.length && seated < 8) {
-        const seat = free[Math.floor(rand() * free.length)];
-        const order = options[Math.floor(rand() * options.length)];
-        seat.guest = { seat, look: randomLook(rand), order, patience: 70, maxPatience: 70, state: 'waiting', t: 0 };
-        sfx('bell');
-      } else if (!options.length && !this.seats.some((s) => s.guest)) {
+      const anything = this.basketCount() > 0 || this.pass.some((p) => p.dish && !p.claimed);
+      if (open < MAX_TICKETS && (options.length || anything)) {
+        // with nothing left on the menu, guests settle for whatever the kitchen has
+        const dish = options.length ? pick(options).id : SLOP.id;
+        this.tickets.push({ id: this.nextTicket++, dish, table: 1 + Math.floor(rand() * 12), patience: 60, max: 60, state: 'pending' });
+      } else if (!options.length && !anything && !this.outstanding().length) {
         this.toast('The pantry is bare. Closing the kitchen for tonight.');
         this.closingIn = 3;
       }
       this.spawnIn = 7 + rand() * 6;
     }
-    for (const seat of this.seats) {
-      const g = seat.guest;
-      if (!g) continue;
-      g.t += dt;
-      if (g.state === 'waiting') {
-        g.patience -= dt;
-        if (g.patience <= 0) {
-          g.state = 'leaving';
-          g.t = 0;
-          this.missed++;
-          this.float(seat.tx + 0.5, seat.ty + 0.5, 'Hmph!', '#ff6b6b');
-          sfx('miss');
+    for (const t of this.tickets) {
+      if (t.state !== 'open') continue;
+      t.patience -= dt;
+      if (t.patience <= 0) {
+        t.state = 'missed';
+        this.missed++;
+        this.toast(`Table ${t.table} gave up waiting for their ${nameOf(t.dish).toLowerCase()}.`);
+        sfx('miss');
+      }
+    }
+    // send a waiter for every plate on the pass that answers a ticket
+    for (const slot of this.pass) {
+      if (!slot.dish || slot.claimed) continue;
+      const opens = this.tickets.filter((t) => t.state === 'open');
+      const ticket = opens.find((t) => t.dish === slot.dish) ?? (slot.dish === SLOP.id ? opens[0] : undefined);
+      if (!ticket) continue;
+      const w = this.waiters.find((x) => !x.task);
+      if (!w) break;
+      ticket.state = 'taken';
+      ticket.freshness = ticket.patience / ticket.max;
+      slot.claimed = true;
+      this.assign(w, { kind: 'pickup', slot, ticket });
+    }
+    // and one to carry each new order in
+    for (const t of this.tickets) {
+      if (t.state !== 'pending' || this.waiters.some((w) => w.task?.ticket === t)) continue;
+      const w = this.waiters.find((x) => !x.task);
+      if (!w) break;
+      this.assign(w, { kind: 'drop', ticket: t });
+    }
+  }
+
+  private assign(w: Waiter, task: NonNullable<Waiter['task']>) {
+    w.task = task;
+    w.stage = 'going';
+  }
+
+  private updateWaiters(dt: number) {
+    const speed = this.staff.speed * dt;
+    for (const w of this.waiters) {
+      if (!w.task || w.stage === 'off') continue;
+      const goal = w.stage === 'going' ? (w.task.kind === 'pickup' ? w.task.slot.tx + 0.5 : 9 + (w.homeX > 9 ? 0.6 : -0.6)) : w.homeX;
+      const goalY = w.stage === 'going' ? PASS_Y : STRIP_Y[w.homeX > 9 ? 1 : 0];
+      const dx = goal - w.x;
+      const dy = goalY - w.y;
+      const d = Math.hypot(dx, dy);
+      if (d > 0.05) {
+        const s = Math.min(d, speed);
+        w.x += (dx / d) * s;
+        w.y += (dy / d) * s;
+        w.moving = true;
+        w.anim += dt;
+        w.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
+        continue;
+      }
+      w.moving = false;
+      if (w.stage === 'going') {
+        w.dir = 'down';
+        if (w.task.kind === 'drop') {
+          w.task.ticket.state = 'open';
+          this.toast(`${w.name}: "Table ${w.task.ticket.table}, one ${nameOf(w.task.ticket.dish)}!"`);
+          sfx('bell');
+        } else {
+          w.carrying = w.task.slot.dish;
+          w.task.slot.dish = null;
+          w.task.slot.claimed = false;
+          sfx('pick');
         }
-      } else if (g.state === 'eating' && g.t > 6) {
-        g.state = 'leaving';
-        g.t = 0;
-      } else if (g.state === 'leaving' && g.t > 1) {
-        seat.guest = null;
+        w.stage = 'back';
+      } else {
+        if (w.task.kind === 'pickup') this.deliver(w.task.ticket, w.carrying!);
+        w.carrying = null;
+        w.task = null;
+        w.stage = 'off';
       }
     }
   }
+
+  /** Price and rating multiplier from the machine that cooks this dish. */
+  quality(dish: string) {
+    const r = recipe(dish);
+    return r ? machineLevel(r.at, this.owned).quality : 1;
+  }
+
+  private startCooking(s: Station, r: Recipe) {
+    s.recipe = r;
+    s.t = 0;
+    s.dur = r.time / machineLevel(s.kind, this.owned).speed;
+  }
+
+  private deliver(t: Ticket, dish: string) {
+    t.state = 'done';
+    t.served = dish;
+    this.served++;
+    const at = { x: 9, y: 2.2 };
+    if (dish === SLOP.id) {
+      this.grumbles++;
+      this.money += SLOP.price;
+      this.earned += SLOP.price;
+      this.float(at.x, at.y, `+${SLOP.price}g  (ugh)`, '#c9b58a');
+      sfx('nope');
+      return;
+    }
+    const r = recipe(dish)!;
+    const pay = Math.round(r.price * this.quality(dish)) + Math.round(r.price * 0.5 * (t.freshness ?? 0));
+    this.money += pay;
+    this.earned += pay;
+    this.float(at.x, at.y, `+${pay}g`, '#ffe066');
+    sfx('coin');
+  }
+
+  // ------------------------------------------------------------ targeting
 
   private findTarget(): Target | null {
     const px = this.x + this.faceX * 0.75;
     const py = this.y + this.faceY * 0.75;
     let best: Target | null = null;
     let bestD = 0.95;
-    const consider = (t: Target) => {
-      const d = Math.hypot(t.tx + 0.5 - px, t.ty + 0.5 - py);
+    const consider = (t: Target, cx = t.tx + 0.5, cy = t.ty + 0.5) => {
+      const d = Math.hypot(cx - px, cy - py);
       if (d < bestD) {
         bestD = d;
         best = t;
       }
     };
+    for (const npc of this.npcs) consider({ kind: 'npc', tx: Math.floor(npc.x), ty: Math.floor(npc.y), npc }, npc.x, npc.y - 0.2);
     const x0 = Math.floor(px);
     const y0 = Math.floor(py);
     for (let ty = y0 - 1; ty <= y0 + 1; ty++) {
@@ -454,15 +690,15 @@ export class Game {
           else if (c === 'G') consider({ kind: 'gangway', tx, ty });
           continue;
         }
+        if (c === 'g') consider({ kind: 'locked', tx, ty, text: `The gangway is up. Next stop: ${NEXT_PORT.name}.` });
+        if (this.map === CABIN && c === 'j') consider({ kind: 'catalog', tx, ty });
+        if (this.map !== GALLEY) continue;
         if (PANTRY_CHARS.has(c)) consider({ kind: 'pantry', tx, ty });
         else if (c === 'W') consider({ kind: 'board', tx, ty });
         else if (c === 'B') consider({ kind: 'bin', tx, ty });
-        else if (c === 'S' || c === 'C') {
-          const st = this.stations.find((s) => s.tx === tx && s.ty === ty)!;
-          consider({ kind: 'station', tx, ty, station: st });
-        } else if (c === 'h') {
-          const seat = this.seats.find((s) => s.tx === tx && s.ty === ty)!;
-          if (seat.guest && seat.guest.state === 'waiting') consider({ kind: 'guest', tx, ty, guest: seat.guest });
+        else if (c === 'X') consider({ kind: 'pass', tx, ty, slot: this.pass.find((p) => p.tx === tx)! });
+        else if (c === 'S' || c === 'C' || c === 'z' || c === 'v') {
+          consider({ kind: 'station', tx, ty, station: this.stations.find((s) => s.tx === tx && s.ty === ty)! });
         }
       }
     }
@@ -472,30 +708,39 @@ export class Game {
   /** Label for the interaction prompt. */
   promptFor(t: Target): string {
     const held = this.hands ? nameOf(this.hands).toLowerCase() : '';
+    const service = this.phase === 'service';
     switch (t.kind) {
+      case 'npc':
+        return `Talk to ${t.npc.def.name}`;
       case 'stall':
-        return `Browse the ${STALLS[t.stall].name}`;
+        return `Shop at the ${STALLS[t.stall].name}`;
       case 'gangway':
         return 'Board the Butter Moon';
+      case 'locked':
+        return 'Gangway';
       case 'board':
-        return this.phase === 'prep' ? "Plan tonight's menu" : "Tonight's menu";
+        return service ? "Tonight's menu" : "Plan tonight's menu";
+      case 'catalog':
+        return "Ship chandler's catalog";
       case 'pantry':
-        if (this.phase === 'prep') return 'Pantry';
+        if (!service) return 'Pantry';
         if (this.hands && ingredient(this.hands)) return `Put back ${held}`;
         return this.hands ? 'Hands full' : 'Open the pantry';
       case 'bin':
         return this.hands ? `Toss ${held}` : 'Bin';
-      case 'guest':
-        return this.hands === t.guest.order.id ? `Serve ${held}` : `Wants ${nameOf(t.guest.order.id).toLowerCase()}`;
+      case 'pass':
+        if (t.slot.dish) return t.slot.claimed ? 'A waiter is on the way' : this.hands ? 'Pass is taken' : `Take back ${nameOf(t.slot.dish).toLowerCase()}`;
+        return this.hands && recipe(this.hands) ? `Send out ${held}` : 'Pass window';
       case 'station': {
         const s = t.station;
-        const name = s.kind === 'stove' ? 'stove' : 'board';
-        if (this.phase !== 'service') return s.kind === 'stove' ? 'Stove' : 'Cutting board';
+        if (s.kind === 'oven' && !this.owned.has('oven')) return 'Empty machine slot';
+        const name = s.kind === 'stove' ? 'stove' : s.kind === 'board' ? 'board' : s.kind === 'oven' ? 'oven' : 'slop pot';
+        if (!service) return s.kind === 'stove' ? 'Stove' : s.kind === 'board' ? 'Cutting board' : s.kind === 'oven' ? 'Oven' : 'Slop pot';
         if (s.result) return this.hands ? 'Hands full' : `Take ${nameOf(s.result).toLowerCase()}`;
-        if (s.recipe) return s.kind === 'stove' ? 'Cooking...' : 'Chopping...';
-        if (this.hands) return `Put on ${name}`;
+        if (s.recipe) return s.kind === 'board' ? 'Chopping...' : 'Cooking...';
+        if (this.hands) return `Put in the ${name}`.replace('in the stove', 'on the stove').replace('in the board', 'on the board');
         if (s.items.length) return `Take back ${nameOf(s.items[s.items.length - 1]).toLowerCase()}`;
-        return name === 'stove' ? 'Stove' : 'Cutting board';
+        return name[0].toUpperCase() + name.slice(1);
       }
     }
   }
@@ -522,16 +767,22 @@ export class Game {
         return;
     }
     const t = this.target;
-    if (!t) return;
+    if (!t || this.warp) return;
     switch (t.kind) {
+      case 'npc':
+        return this.talk(t.npc);
       case 'stall':
         return this.openStall(t.stall);
       case 'gangway':
         return this.openGangway();
+      case 'locked':
+        return this.toast(t.text);
       case 'board':
-        return this.phase === 'prep' ? this.openWorkbench() : this.openMenuCard();
+        return this.phase === 'afternoon' ? this.openWorkbench() : this.openMenuCard();
+      case 'catalog':
+        return this.openCatalog();
       case 'pantry':
-        if (this.phase === 'prep') return this.toast('Plan the menu at the chalkboard first.');
+        if (this.phase !== 'service') return this.toast('The pantry opens when dinner service starts.');
         if (this.hands && ingredient(this.hands)) {
           this.add(this.hands, 1);
           this.hands = null;
@@ -546,26 +797,11 @@ export class Game {
         this.hands = null;
         sfx('toss');
         return;
-      case 'guest': {
-        const g = t.guest;
-        if (this.hands !== g.order.id) {
-          sfx('nope');
-          return this.toast(`They ordered ${nameOf(g.order.id)}.`);
-        }
-        const tip = Math.round(g.order.price * 0.5 * (g.patience / g.maxPatience));
-        const pay = g.order.price + tip;
-        this.money += pay;
-        this.earned += pay;
-        this.served++;
-        this.hands = null;
-        g.state = 'eating';
-        g.t = 0;
-        this.float(t.tx + 0.5, t.ty + 0.5, `+${pay}g`, '#ffe066');
-        sfx('coin');
-        return;
-      }
+      case 'pass':
+        return this.usePass(t.slot);
       case 'station':
-        if (this.phase !== 'service') return this.toast('The kitchen opens when dinner service starts.');
+        if (t.station.kind === 'oven' && !this.owned.has('oven')) return this.toast('An oven would fit here. Order one from the catalog in your cabin.');
+        if (this.phase !== 'service') return this.toast('The stoves are lit at 6 when dinner service starts.');
         return this.useStation(t.station);
     }
   }
@@ -577,19 +813,24 @@ export class Game {
     }
   }
 
-  openNotebook() {
-    if (this.phase !== 'market' && this.phase !== 'prep' && this.phase !== 'service') return;
+  openRecipeBook() {
+    if (!this.roaming) return;
     if (this.modal) return this.cancel();
     this.modal = {
-      title: "Chef's notebook",
-      subtitle: () => 'Dishes worth trying on this leg. Ingredients are your call.',
+      kind: 'list',
+      title: 'Recipe book',
+      subtitle: () => `${this.known.size} of ${RECIPES.length} recipes discovered. Try combinations at the galley chalkboard.`,
       index: 0,
-      rows: () => RECIPES.map((r) => ({
-        label: this.known.has(r.id) ? r.name : `${r.name}  (${r.inputs.length} ingredients)`,
-        detail: this.known.has(r.id) ? r.inputs.map(nameOf).join(' + ') : r.hint,
-        icon: r.id,
-        enabled: true,
-      })),
+      rows: () => [
+        { label: `${SLOP.name}  ${SLOP.price}g`, detail: 'any one ingredient, slop pot', icon: SLOP.id, enabled: true },
+        ...(this.known.size
+          ? [...this.known].map((id) => {
+            const r = recipe(id)!;
+            return { label: `${r.name}  ${r.price}g`, detail: `${r.inputs.map(nameOf).join(' + ')}  (${r.at})`, icon: id, enabled: true };
+          })
+          : [{ label: 'No recipes yet. Combine ingredients during menu planning.', heading: true }]),
+        { label: 'Close', enabled: true, action: () => this.cancel() },
+      ],
     };
   }
 
@@ -597,6 +838,7 @@ export class Game {
     const m = this.modal;
     if (!m) return;
     const rows = m.rows();
+    if (rows.length < 2) return;
     let i = m.index;
     for (let k = 0; k < rows.length; k++) {
       i = (i + d + rows.length) % rows.length;
@@ -624,45 +866,122 @@ export class Game {
     row.action();
   }
 
+  // ------------------------------------------------------------ talking
+
+  private talk(npc: Npc) {
+    const lines = npc.def.lines;
+    let page = 0;
+    const dx = this.x - npc.x;
+    const dy = this.y - npc.y;
+    npc.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
+    const isHenri = npc.def.name === 'Henri' && this.phase === 'afternoon';
+    this.modal = {
+      kind: 'talk',
+      title: npc.def.name,
+      speaker: npc.def.name,
+      look: npc.def.look,
+      subtitle: () => '',
+      line: () => lines[page],
+      index: 0,
+      rows: () => [{
+        label: page < lines.length - 1 ? 'Next' : isHenri ? 'Talk about tonight\'s crew' : 'Goodbye',
+        enabled: true,
+        action: () => {
+          if (page < lines.length - 1) {
+            page++;
+            sfx('pick');
+          } else if (isHenri) this.openStaff(npc);
+          else this.cancel();
+        },
+      }],
+    };
+    sfx('pick');
+  }
+
+  private openStaff(npc: Npc) {
+    let said = `Tonight you have ${this.staff.label}. Choose who works the floor; it shows in the guests' reviews.`;
+    this.modal = {
+      kind: 'talk',
+      title: 'Hire tonight\'s waiters',
+      speaker: npc.def.name,
+      look: npc.def.look,
+      subtitle: () => '',
+      line: () => said,
+      index: 0,
+      rows: () => [
+        ...STAFF_OPTIONS.map((o) => ({
+          label: `${o.label}  ${o.cost ? `${o.cost}g` : 'free'}`,
+          detail: `skill ${o.skill}/5  ${o.blurb}`,
+          checked: this.staff === o,
+          enabled: this.staff === o || this.money + this.staff.cost >= o.cost,
+          action: () => {
+            if (this.staff === o) return;
+            this.money += this.staff.cost - o.cost;
+            this.spent += o.cost - this.staff.cost;
+            this.staff = o;
+            said = `${o.label} it is. ${o.blurb}`;
+            sfx('coin');
+          },
+        })),
+        { label: 'Done', enabled: true, action: () => this.cancel() },
+      ],
+    };
+  }
+
   // ------------------------------------------------------------ market
 
   private openStall(id: StallId) {
     const stall = STALLS[id];
+    this.shopLine = stall.greeting;
     this.modal = {
+      kind: 'shop',
       title: stall.name,
-      subtitle: () => `"${stall.keeper}"   Purse ${this.money}g   Basket ${this.basketCount()}/${BASKET_SIZE}`,
+      speaker: stall.merchant,
+      look: MERCHANT_LOOKS[id],
+      line: () => this.shopLine,
+      subtitle: () => `Purse ${this.money}g   Basket ${this.basketCount()}/${BASKET_SIZE}`,
       index: 0,
       rows: () => {
         const rows: MenuRow[] = INGREDIENTS.filter((i) => i.stall === id).map((ing) => ({
           label: `${ing.name}  ${ing.price}g`,
-          detail: this.count(ing.id) ? `in basket: ${this.count(ing.id)}` : undefined,
+          detail: this.count(ing.id) ? `x${this.count(ing.id)}` : undefined,
           icon: ing.id,
-          enabled: this.money >= ing.price && this.basketCount() < BASKET_SIZE,
+          enabled: true,
           action: () => {
+            if (this.basketCount() >= BASKET_SIZE) {
+              this.shopLine = 'Your basket is overflowing, chef! Hand something back first.';
+              return sfx('nope');
+            }
+            if (this.money < ing.price) {
+              this.shopLine = `${ing.name} is ${ing.price}g, and you have ${this.money}g. Maybe something cheaper?`;
+              return sfx('nope');
+            }
             this.money -= ing.price;
             this.spent += ing.price;
             this.add(ing.id, 1);
+            this.shopLine = pick([`One ${ing.name.toLowerCase()}, merci! Anything else?`, `Excellent choice. That's ${this.count(ing.id)} now.`, `${ing.name}, wrapped and ready.`]);
             sfx('coin');
           },
         }));
         const inBasket = INGREDIENTS.filter((i) => i.stall === id && this.count(i.id));
         if (inBasket.length) {
-          rows.push({ label: 'Change your mind', heading: true });
+          rows.push({ label: 'Hand back', heading: true });
           for (const ing of inBasket) {
             rows.push({
-              label: `Hand back one: ${ing.name}  +${ing.price}g`,
+              label: `${ing.name}  +${ing.price}g`,
               icon: ing.id,
               enabled: true,
               action: () => {
                 this.money += ing.price;
                 this.spent -= ing.price;
                 this.add(ing.id, -1);
+                this.shopLine = 'No trouble, I\'ll put it back.';
                 sfx('toss');
               },
             });
           }
         }
-        rows.push({ label: 'Done', enabled: true, action: () => this.cancel() });
+        rows.push({ label: 'Leave the stall', enabled: true, action: () => this.cancel() });
         return rows;
       },
     };
@@ -670,17 +989,13 @@ export class Game {
 
   private openGangway() {
     this.modal = {
+      kind: 'list',
       title: 'Board the Butter Moon?',
-      subtitle: () => `The ship sails for ${NEXT_PORT.name} tonight. Basket ${this.basketCount()}/${BASKET_SIZE}, ${this.money}g left.`,
+      subtitle: () => `You can't come back ashore. Basket ${this.basketCount()}/${BASKET_SIZE}, ${this.money}g left.`,
       index: 0,
       rows: () => [
         { label: 'Not yet, keep shopping', enabled: true, action: () => this.cancel() },
-        {
-          label: 'All aboard, head to the galley',
-          detail: this.basketCount() ? undefined : 'Your basket is empty',
-          enabled: this.basketCount() > 0,
-          action: () => this.board(),
-        },
+        { label: 'All aboard', detail: this.basketCount() ? undefined : 'Your basket is empty', enabled: true, action: () => this.board() },
       ],
     };
   }
@@ -689,8 +1004,9 @@ export class Game {
 
   private openWorkbench() {
     this.modal = {
+      kind: 'list',
       title: "Tonight's dinner menu",
-      subtitle: () => `Pick 2 or 3 ingredients and taste them together. Menu ${this.menu.length}/${MENU_SIZE}.`,
+      subtitle: () => `Tick 2 or 3 ingredients and taste them. Discoveries go in your recipe book. Menu ${this.menu.length}/${MENU_SIZE}.`,
       index: 1,
       rows: () => {
         const rows: MenuRow[] = [{ label: 'Your pantry', heading: true }];
@@ -711,24 +1027,26 @@ export class Game {
             },
           });
         }
+        if (rows.length === 1) rows.push({ label: 'Nothing in the pantry. Slop it is.', heading: true });
         rows.push({
           label: this.picks.length ? `Taste: ${this.picks.map(nameOf).join(' + ')}` : 'Taste the combination',
           enabled: this.picks.length >= 2,
           action: () => this.taste(),
         });
-        rows.push({ label: 'Dishes you can make', heading: true });
-        if (!this.known.size) rows.push({ label: 'Nothing yet. Combine ingredients above.', heading: true });
+        rows.push({ label: 'On the menu (slop is always available)', heading: true });
+        if (!this.known.size) rows.push({ label: 'No dishes discovered yet.', heading: true });
         for (const id of this.known) {
           const r = recipe(id)!;
           const on = this.menu.includes(id);
           rows.push({
             label: `${r.name}  ${r.price}g`,
-            detail: `${r.inputs.map(nameOf).join(' + ')}  (${r.at === 'stove' ? 'stove' : 'board'})`,
+            detail: this.canCook(r) ? `${r.inputs.map(nameOf).join(' + ')}  (${r.at})` : 'needs an oven',
             icon: id,
             checked: on,
-            enabled: on || this.menu.length < MENU_SIZE,
+            enabled: on || (this.menu.length < MENU_SIZE && this.canCook(r)),
             action: () => {
               if (on) this.menu = this.menu.filter((m) => m !== id);
+              else if (!this.canCook(r)) return this.toast(`${r.name} needs an oven. Order one from the catalog in your cabin.`);
               else this.menu.push(id);
               sfx('place');
             },
@@ -736,8 +1054,8 @@ export class Game {
         }
         rows.push({
           label: 'Open the dining room',
-          detail: this.menu.length ? this.menu.map(nameOf).join(', ') : 'Put at least one dish on the menu',
-          enabled: this.menu.length > 0,
+          detail: this.menu.length ? this.menu.map(nameOf).join(', ') : 'Only slop tonight?',
+          enabled: true,
           action: () => this.openService(),
         });
         return rows;
@@ -753,25 +1071,61 @@ export class Game {
       return;
     }
     if (this.known.has(r.id)) {
-      this.toast(`You already know ${r.name}.`);
+      this.toast(`${r.name} is already in your recipe book.`);
     } else {
       this.known.add(r.id);
-      this.toast(`New recipe: ${r.name}!`);
+      this.toast(`New recipe: ${r.name}! Added to your recipe book.`);
       sfx('ding');
-      if (this.menu.length < MENU_SIZE) this.menu.push(r.id);
+      if (this.menu.length < MENU_SIZE && this.canCook(r)) this.menu.push(r.id);
+      else if (!this.canCook(r)) this.toast(`${r.name} needs an oven before it can go on the menu.`);
     }
     this.picks = [];
   }
 
-  private openMenuCard() {
+  canCook(r: Recipe) {
+    return r.at !== 'oven' || this.owned.has('oven');
+  }
+
+  private openCatalog() {
+    if (this.phase !== 'afternoon') return this.toast('The chandler only takes orders while we are in port waters.');
     this.modal = {
-      title: "Tonight's menu",
-      subtitle: () => 'Guests only order what is on the menu and what the pantry can still make.',
+      kind: 'list',
+      title: "Ship chandler's catalog",
+      subtitle: () => `Machines are installed in the galley before dinner. Purse ${this.money}g.`,
       index: 0,
       rows: () => [
-        ...this.menu.map((id) => {
+        ...UPGRADES.map((u) => {
+          const has = this.owned.has(u.id);
+          const blocked = u.needs && !this.owned.has(u.needs);
+          return {
+            label: has ? `${u.name}  installed` : `${u.name}  ${u.cost}g`,
+            detail: blocked ? `needs the ${UPGRADES.find((x) => x.id === u.needs)!.name.toLowerCase()} first` : u.blurb,
+            checked: has,
+            enabled: !has && !blocked && this.money >= u.cost,
+            action: () => {
+              this.money -= u.cost;
+              this.spent += u.cost;
+              this.owned.add(u.id);
+              this.toast(`${u.name} installed in the galley.`);
+              sfx('coin');
+            },
+          };
+        }),
+        { label: 'Close the catalog', enabled: true, action: () => this.cancel() },
+      ],
+    };
+  }
+
+  private openMenuCard() {
+    this.modal = {
+      kind: 'list',
+      title: "Tonight's menu",
+      subtitle: () => 'Guests order from the menu while the pantry lasts. Slop answers any ticket, badly.',
+      index: 0,
+      rows: () => [
+        ...[...this.menu, SLOP.id].map((id) => {
           const r = recipe(id)!;
-          return { label: `${r.name}  ${r.price}g`, detail: `${r.inputs.map(nameOf).join(' + ')}  (${r.at})`, icon: id, enabled: true };
+          return { label: `${r.name}  ${r.price}g`, detail: id === SLOP.id ? 'any one ingredient (pot)' : `${r.inputs.map(nameOf).join(' + ')}  (${r.at})`, icon: id, enabled: true };
         }),
         { label: 'Back to work', enabled: true, action: () => this.cancel() },
       ],
@@ -782,6 +1136,7 @@ export class Game {
 
   private openPantry() {
     this.modal = {
+      kind: 'list',
       title: 'Pantry',
       subtitle: () => 'Take one ingredient at a time.',
       index: 0,
@@ -805,6 +1160,23 @@ export class Game {
     };
   }
 
+  private usePass(slot: PassSlot) {
+    if (this.phase !== 'service') return this.toast('The pass opens at 6 for dinner service.');
+    if (slot.dish) {
+      if (slot.claimed || this.hands) return;
+      this.hands = slot.dish;
+      slot.dish = null;
+      sfx('pick');
+      return;
+    }
+    if (!this.hands) return;
+    if (this.hands === BURNT) return this.toast('Nobody is eating that. Bin it.');
+    if (!recipe(this.hands)) return this.toast('Only finished plates go on the pass.');
+    slot.dish = this.hands;
+    this.hands = null;
+    sfx('place');
+  }
+
   private useStation(s: Station) {
     if (s.result) {
       if (this.hands) return this.toast('Your hands are full.');
@@ -822,21 +1194,44 @@ export class Game {
       }
       return;
     }
-    if (!ingredient(this.hands)) return this.toast('Serve that to a guest, or bin it.');
+    if (!ingredient(this.hands)) return this.toast('Plates go on the pass window. Burnt food goes in the bin.');
+    if (s.kind === 'pot') {
+      s.items = [this.hands];
+      this.hands = null;
+      this.startCooking(s, SLOP);
+      sfx('place');
+      return;
+    }
     const next = [...s.items, this.hands];
     const fits = this.menu.map((id) => recipe(id)!).filter((r) => r.at === s.kind && isSubset(next, r.inputs));
     if (!fits.length) {
       sfx('nope');
-      const where = s.kind === 'stove' ? 'stove' : 'board';
-      return this.toast(next.length > 1 ? "That doesn't make anything on tonight's menu." : `Nothing on the menu starts with ${nameOf(this.hands).toLowerCase()} on the ${where}.`);
+      return this.toast(next.length > 1 ? "That doesn't make anything on tonight's menu." : `Nothing on the menu starts with ${nameOf(this.hands).toLowerCase()} here. The slop pot takes anything.`);
     }
     s.items = next;
     this.hands = null;
     sfx('place');
     const exact = fits.find((r) => r.inputs.length === next.length);
-    if (exact) {
-      s.recipe = exact;
-      s.t = 0;
-    }
+    if (exact) this.startCooking(s, exact);
   }
 }
+
+function pick<T>(a: T[]): T {
+  return a[Math.floor(rand() * a.length)];
+}
+
+const PASSENGER_LINES = [
+  'What a view. I could sail forever.',
+  'Is it true the new chef shops at the market himself? Herself? Themselves? Anyway, I hope so.',
+  'I hear tonight is French night.',
+  'Have you tried the pool? Freezing!',
+  'My cabin has a porthole. I keep counting the waves.',
+];
+const LOCAL_LINES = [
+  'The Vieux-Port has fed sailors for two thousand years.',
+  'Haggle? At the poissonnerie? Never. Odette would throw a fish at you.',
+  'You cook on that big ship? Make them something proper.',
+  'The saffron at the epicerie is the real thing.',
+];
+
+export type { Look };

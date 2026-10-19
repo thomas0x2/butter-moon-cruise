@@ -1,6 +1,6 @@
 import { Game } from './game';
 import { makeCanvas } from './grid';
-import { modalHits, notebookHit, renderHud, renderWorld } from './render';
+import { hudLayout, modalHits, bookHit, renderHud, renderWorld } from './render';
 import { toggleMute, unlockAudio } from './sound';
 
 const screen = document.getElementById('game') as HTMLCanvasElement;
@@ -31,7 +31,7 @@ window.addEventListener('keydown', (e) => {
   if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
   if (!e.repeat && (k === 'e' || k === ' ' || k === 'enter')) game.interact();
   if (!e.repeat && (k === 'escape' || k === 'q' || k === 'backspace')) game.cancel();
-  if (!e.repeat && k === 'n') game.openNotebook();
+  if (!e.repeat && k === 'n') game.openRecipeBook();
   if (game.modal && (k === 'arrowup' || k === 'w')) game.moveSelection(-1);
   if (game.modal && (k === 'arrowdown' || k === 's')) game.moveSelection(1);
   if (!e.repeat && k === 'm') game.toast(toggleMute() ? 'Sound off' : 'Sound on');
@@ -55,12 +55,11 @@ screen.addEventListener('pointerdown', (e) => {
     else game.cancel();
     return;
   }
-  if (inside(notebookHit)) {
-    game.openNotebook();
+  if (inside(bookHit)) {
+    game.openRecipeBook();
     return;
   }
-  const walkable = game.phase === 'market' || game.phase === 'prep' || game.phase === 'service';
-  if (!walkable || e.clientX > screen.getBoundingClientRect().left + screen.clientWidth / 2) {
+  if (!game.roaming || e.clientX > screen.getBoundingClientRect().left + screen.clientWidth / 2) {
     game.interact();
     return;
   }
@@ -104,10 +103,11 @@ function frame(now: number) {
   last = now;
   const [ix, iy] = inputVector();
   game.update(dt, ix, iy);
-  const view = renderWorld(game, lowCtx, low.width, low.height);
+  const hud = hudLayout(game, low.width);
+  const view = renderWorld(game, lowCtx, low.width, low.height, hud);
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(low, 0, 0, low.width * scale, low.height * scale);
-  renderHud(game, ctx, view, scale, screen.width, screen.height);
+  renderHud(game, ctx, view, scale, screen.width, screen.height, hud);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

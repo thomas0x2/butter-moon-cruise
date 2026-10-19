@@ -1,51 +1,65 @@
-// Tile maps. Each character is one tile.
-// Ship:   ~ sea   r rail   # low wall   . teak deck   k galley floor   d dining carpet   p pool
-//         F M U V O pantry (fridge, ice box, sacks, crates)   S stove   C cutting board   B bin
-//         W menu board   T table   h chair   L sun lounger   o life ring
-// Market: q cobbles   n bollard   G gangway   A P E D market stalls   x barrel   t plane tree
-//         H I house front (I has a door)   R rooftops
+// Tile maps. Each character is one tile; rooms connect through doors like Stardew or Pokemon buildings.
+//
+// Floors   . teak deck   k galley tiles   d carpet   , carpet behind the pass   p pool   q cobbles
+//          m marble   c cabin boards   R rooftops
+// Walls    # wall   w wall with porthole   r ship's rail   D door   Z stairs   g locked gangway door
+// Galley   F M U V O pantry (fridge, ice box, sacks, crates)   S stove   C cutting board   B bin
+//          W menu chalkboard   X pass window   v oven (once bought)   z slop pot
+// Rooms    T table   h chair   L sun lounger   o life ring   J bar counter   i bar stool   u funnel
+//          Q reception desk   f potted palm   K b bed (head, foot)   j writing desk
+// Market   n bollard   G gangway   A P E Y market stalls   x barrel   t plane tree   H I house front
 
-export type Floor = 'sea' | 'deck' | 'galley' | 'dining' | 'pool' | 'cobble' | 'roof';
+export type Floor = 'sea' | 'deck' | 'galley' | 'dining' | 'pool' | 'cobble' | 'roof' | 'marble' | 'cabin' | 'stairs';
+
+export type MapId = 'market' | 'lobby' | 'galley' | 'restaurant' | 'lido' | 'cabin';
+
+export interface Door {
+  x: number;
+  y: number;
+  to: MapId;
+  /** where the chef appears in the destination room */
+  sx: number;
+  sy: number;
+  dir: 'up' | 'down' | 'left' | 'right';
+}
+
+export interface WallLook {
+  face: string;
+  top: string;
+  trim: string;
+}
 
 export interface TileMap {
-  id: 'ship' | 'market';
+  id: MapId;
+  name: string;
   rows: string[];
   w: number;
   h: number;
+  outside: 'sea' | 'void';
   floorOf: (tx: number, ty: number, c: string) => Floor;
   walkable: Set<string>;
-  /** tile character strolling passengers stay on */
+  /** tile character strolling NPCs stay on */
   strollOn: string;
+  wall: WallLook;
+  doors: Door[];
 }
 
-function pad(s: string, w: number, fill = '~') {
-  return (s + fill.repeat(w)).slice(0, w);
-}
+const DOORS = new Set(['D', 'Z']);
+const WALLS = new Set(['#', 'w', 'g']);
 
-function shipRows(): string[] {
-  const W = 32;
-  const galley = ['FMUkSSkCCk', 'kkkkkkkkkW', 'Vkkkkkkkkk', 'Okkkkkkkkk', 'Bkkkkkkkkk'];
-  const dining = ['ddddddddd', 'dhThdhThd', 'ddddddddd', 'dhThdhThd', 'ddddddddd'];
-  const galleyDoor = ['#', '#', 'k', '#', '#'];
-  const diningDoor = ['#', '#', 'd', '#', '#'];
-  const bow = ['....o', '......', '.......', '.hTh...', '.......'];
-  const lower = [
-    '............................',
-    '.L.L....pppppp...hTh..hTh...',
-    '........pppppp.............o',
-    '.L.L....pppppp...hTh.......',
-    '..........................',
-  ];
-  const rows: string[] = [];
-  rows.push('~'.repeat(W));
-  rows.push(pad('~' + 'r'.repeat(28), W));
-  for (let i = 0; i < 5; i++) rows.push(pad('~r' + galley[i] + galleyDoor[i] + dining[i] + diningDoor[i] + bow[i] + 'r', W));
-  rows.push(pad('~r' + '#####k#####' + '####d#####' + '.......' + 'r', W));
-  for (const l of lower) rows.push(pad('~r' + l + 'r', W));
-  rows.push(pad('~' + 'r'.repeat(28), W));
-  while (rows.length < 16) rows.push('~'.repeat(W));
+function build(rows: string[]): string[] {
+  const w = rows[0].length;
+  rows.forEach((r, i) => {
+    if (r.length !== w) throw new Error(`map row ${i} is ${r.length} wide, expected ${w}`);
+  });
   return rows;
 }
+
+function make(m: Omit<TileMap, 'w' | 'h'>): TileMap {
+  return { ...m, rows: build(m.rows), w: m.rows[0].length, h: m.rows.length };
+}
+
+// ------------------------------------------------------------ Marseille
 
 function marketRows(): string[] {
   const W = 34;
@@ -59,7 +73,7 @@ function marketRows(): string[] {
     let r = 'q'.repeat(W);
     if (y === 6) for (const x of [2, 30]) r = set(r, x, 't');
     if (y === 8) {
-      for (const [x, c] of [[5, 'A'], [6, 'A'], [10, 'P'], [11, 'P'], [15, 'E'], [16, 'E'], [20, 'D'], [21, 'D']] as [number, string][]) r = set(r, x, c);
+      for (const [x, c] of [[5, 'A'], [6, 'A'], [10, 'P'], [11, 'P'], [15, 'E'], [16, 'E'], [20, 'Y'], [21, 'Y']] as [number, string][]) r = set(r, x, c);
       for (const x of [25, 26]) r = set(r, x, 'x');
     }
     if (y === 11) for (const x of [8, 18, 27]) r = set(r, x, 't');
@@ -74,51 +88,203 @@ function marketRows(): string[] {
   return rows;
 }
 
-const SHIP_ROWS = shipRows();
-const MARKET_ROWS = marketRows();
-
-export const SHIP: TileMap = {
-  id: 'ship',
-  rows: SHIP_ROWS,
-  w: SHIP_ROWS[0].length,
-  h: SHIP_ROWS.length,
-  walkable: new Set(['.', 'k', 'd']),
-  strollOn: '.',
-  floorOf: (tx, ty, c) => {
-    if (c === 'p') return 'pool';
-    if (c === 'k') return 'galley';
-    if (c === 'd') return 'dining';
-    if (c === '#' || c === 'r') return 'deck';
-    if (tx >= 2 && tx <= 11 && ty >= 2 && ty <= 6) return 'galley';
-    if (tx >= 13 && tx <= 21 && ty >= 2 && ty <= 6) return 'dining';
-    return 'deck';
-  },
-};
-
-export const MARKET: TileMap = {
+export const MARKET = make({
   id: 'market',
-  rows: MARKET_ROWS,
-  w: MARKET_ROWS[0].length,
-  h: MARKET_ROWS.length,
+  name: 'Vieux-Port market, Marseille',
+  rows: marketRows(),
+  outside: 'sea',
   walkable: new Set(['q']),
   strollOn: 'q',
+  wall: { face: '#e8b86a', top: '#c4643a', trim: '#a5733f' },
   floorOf: (_tx, _ty, c) => (c === 'R' || c === 'H' || c === 'I' ? 'roof' : 'cobble'),
-};
+  doors: [],
+});
+
+// ------------------------------------------------------------ ship rooms
+
+export const LOBBY = make({
+  id: 'lobby',
+  name: 'Grand atrium',
+  rows: [
+    '###w##w###ZZ###w#D####',
+    '#mmmmmmmmmmmmmmmmmmmm#',
+    '#mfmmmmmmmmmmmmmmmfmm#',
+    '#mmmmmmmmmmmmmmmmmmmm#',
+    '#mmQQQmmmmmmmmmmmmmmm#',
+    '#mmmmmmmmmmmmmmmmmmmm#',
+    'Dmmmmmmmmmmmmmmmmmmmm' + 'D',
+    '#mmmmmmmmmmmmmmmmmmmm#',
+    '#mfmmmmmmmmmmmmmmmfmm#',
+    '#mmmmmmmmmmmmmmmmmmmm#',
+    '#mmmmmmmmmmmmmmmmmmmm#',
+    '##########gg##########',
+  ],
+  outside: 'void',
+  walkable: new Set(['m', 'D', 'Z']),
+  strollOn: 'm',
+  wall: { face: '#2f5d6b', top: '#e8dcc0', trim: '#c9a14a' },
+  floorOf: () => 'marble',
+  doors: [
+    { x: 10, y: 0, to: 'lido', sx: 6.5, sy: 6.6, dir: 'down' },
+    { x: 11, y: 0, to: 'lido', sx: 6.5, sy: 6.6, dir: 'down' },
+    { x: 17, y: 0, to: 'cabin', sx: 4.5, sy: 5.4, dir: 'up' },
+    { x: 0, y: 6, to: 'galley', sx: 9.5, sy: 9.4, dir: 'up' },
+    { x: 21, y: 6, to: 'restaurant', sx: 13.5, sy: 8.4, dir: 'up' },
+  ],
+});
+
+export const GALLEY = make({
+  id: 'galley',
+  name: 'Galley',
+  rows: [
+    '####################',
+    '#,,,,,,,,,,,,,,,,,,#',
+    '#,,,,,,,,,,,,,,,,,,#',
+    '#######XXXX#########',
+    '#FMUkkkkkkkkSSkCCkW#',
+    '#Vkkkkkkkkkkkkkkkkk#',
+    '#Okkkkkkkkkkkkkkkkk#',
+    '#BkkkkkkkSSkkvkkkzk#',
+    '#kkkkkkkkkkkkkkkkkk#',
+    '#kkkkkkkkkkkkkkkkkk#',
+    '#########D##########',
+  ],
+  outside: 'void',
+  walkable: new Set(['k', 'D']),
+  strollOn: ',',
+  wall: { face: '#c9d3dc', top: '#8f9aa6', trim: '#5b6672' },
+  floorOf: (_tx, _ty, c) => (c === ',' ? 'dining' : 'galley'),
+  doors: [{ x: 9, y: 10, to: 'lobby', sx: 1.5, sy: 6.5, dir: 'right' }],
+});
+
+export const RESTAURANT = make({
+  id: 'restaurant',
+  name: 'The Butter Moon restaurant',
+  rows: [
+    '##w##w##w##w##w##w##w#',
+    '#dddddddddddddddddddd#',
+    '#dhThddhThddhThddhThd#',
+    '#dddddddddddddddddddd#',
+    '#dhThddhThddhThddhThd#',
+    '#dddddddddddddddddddd#',
+    '#dhThddhThddhThddhThd#',
+    '#dddddddddddddddddddd#',
+    '#fddddddddddddddddddf#',
+    '####XXXX#####DD#######',
+  ],
+  outside: 'void',
+  walkable: new Set(['d', 'D']),
+  strollOn: 'd',
+  wall: { face: '#5a2a3a', top: '#e3b54a', trim: '#3a1a24' },
+  floorOf: () => 'dining',
+  doors: [
+    { x: 13, y: 9, to: 'lobby', sx: 20.5, sy: 6.5, dir: 'left' },
+    { x: 14, y: 9, to: 'lobby', sx: 20.5, sy: 6.5, dir: 'left' },
+  ],
+});
+
+export const CABIN = make({
+  id: 'cabin',
+  name: "Chef's cabin",
+  rows: [
+    '##w###w###',
+    '#cKKcccjc#',
+    '#cbbccccc#',
+    '#ccccccfc#',
+    '#cccccccc#',
+    '#cccccccc#',
+    '####D#####',
+  ],
+  outside: 'void',
+  walkable: new Set(['c', 'D']),
+  strollOn: 'c',
+  wall: { face: '#e8dcc0', top: '#8a5a32', trim: '#6b4a2a' },
+  floorOf: () => 'cabin',
+  doors: [{ x: 4, y: 6, to: 'lobby', sx: 17.5, sy: 1.5, dir: 'down' }],
+});
+
+function lidoRows(): string[] {
+  const W = 42;
+  const H = 18;
+  const right = (y: number) => [0, 34, 35, 36, 37][Math.min(y, H - 1 - y)] ?? 38;
+  const grid: string[][] = [];
+  for (let y = 0; y < H; y++) {
+    const row = Array(W).fill('~');
+    if (y >= 1 && y <= H - 2) {
+      const r = right(y);
+      for (let x = 1; x <= r; x++) row[x] = y === 1 || y === H - 2 || x === 1 || x === r ? 'r' : '.';
+    }
+    grid.push(row);
+  }
+  const put = (x: number, y: number, s: string) => [...s].forEach((c, i) => (grid[y][x + i] = c));
+  // deckhouse with the stairs down to the atrium
+  put(4, 3, '#####');
+  put(4, 4, '#####');
+  put(4, 5, '##Z##');
+  for (let y = 6; y <= 10; y++) put(14, y, 'pppppppp');
+  put(14, 4, 'L.L.L.L.');
+  put(14, 12, 'L.L.L.L.');
+  put(26, 4, 'JJJJ');
+  put(26, 5, 'iiii');
+  put(32, 8, 'u');
+  put(5, 11, 'hTh');
+  put(5, 13, 'hTh');
+  put(26, 11, 'hTh');
+  put(26, 13, 'hTh');
+  put(10, 2, 'o');
+  put(24, 2, 'o');
+  put(10, 15, 'o');
+  put(24, 15, 'o');
+  return grid.map((r) => r.join(''));
+}
+
+export const LIDO = make({
+  id: 'lido',
+  name: 'Lido deck',
+  rows: lidoRows(),
+  outside: 'sea',
+  walkable: new Set(['.', 'Z']),
+  strollOn: '.',
+  wall: { face: '#f3f5f7', top: '#9b6a3e', trim: '#9aa4ae' },
+  floorOf: () => 'deck',
+  doors: [{ x: 6, y: 5, to: 'lobby', sx: 10.9, sy: 1.5, dir: 'down' }],
+});
+
+export const MAPS: Record<MapId, TileMap> = { market: MARKET, lobby: LOBBY, galley: GALLEY, restaurant: RESTAURANT, lido: LIDO, cabin: CABIN };
+
+// ------------------------------------------------------------ queries
 
 export function charAt(m: TileMap, tx: number, ty: number): string {
-  if (tx < 0 || ty < 0 || tx >= m.w || ty >= m.h) return '~';
+  if (tx < 0 || ty < 0 || tx >= m.w || ty >= m.h) return m.outside === 'sea' ? '~' : ' ';
   return m.rows[ty][tx];
 }
 
 export function floorAt(m: TileMap, tx: number, ty: number): Floor {
   const c = charAt(m, tx, ty);
-  return c === '~' ? 'sea' : m.floorOf(tx, ty, c);
+  if (c === '~') return 'sea';
+  if (c === 'Z') return 'stairs';
+  if (c === 'p') return 'pool';
+  return m.floorOf(tx, ty, c);
 }
 
 export function isSolid(m: TileMap, tx: number, ty: number): boolean {
   return !m.walkable.has(charAt(m, tx, ty));
 }
 
+/** Tiles that get a floor drawn: anything but open sea and the void around interiors. */
 export function isLand(m: TileMap, tx: number, ty: number): boolean {
-  return charAt(m, tx, ty) !== '~';
+  const c = charAt(m, tx, ty);
+  return c !== '~' && c !== ' ';
+}
+
+export function isWall(c: string): boolean {
+  return WALLS.has(c);
+}
+
+export function isDoor(c: string): boolean {
+  return DOORS.has(c);
+}
+
+export function doorAt(m: TileMap, tx: number, ty: number): Door | undefined {
+  return m.doors.find((d) => d.x === tx && d.y === ty);
 }
