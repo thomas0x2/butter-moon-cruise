@@ -136,3 +136,36 @@ export function isSubset(a: string[], b: string[]): boolean {
 }
 
 export const NEXT_PORT = { name: 'Naples', dish: 'Pizza napoletana', greeting: 'Buongiorno!' };
+
+// ------------------------------------------------------------ quality
+
+/** Ingredient and plate quality grades. Better ones come from skill and effort, never from paying more. */
+export const GRADE_NAMES = ['', 'poor', 'fine', 'prime'];
+
+type CueGroup = 'fish' | 'shellfish' | 'produce' | 'pantry' | 'dairy';
+const CUE_GROUP: Record<string, CueGroup> = {
+  fish: 'fish', mussels: 'shellfish',
+  tomato: 'produce', onion: 'produce', garlic: 'produce', potato: 'produce', courgette: 'produce', lemon: 'produce',
+  saffron: 'pantry', herbs: 'pantry', oil: 'pantry', flour: 'pantry',
+  butter: 'dairy', cheese: 'dairy', eggs: 'dairy', bread: 'dairy',
+};
+
+/** What a careful eye notices about one unit in the crate, by grade (index 1..3). Several phrasings each so the words alone don't give it away. */
+const CUES: Record<CueGroup, string[][]> = {
+  fish: [[], ['cloudy eyes, soft belly', 'dull scales, smells strong'], ['firm, smells of the sea', 'bright enough, a little dry'], ['clear eyes, bright red gills', 'stiff and glossy, smells of nothing but sea']],
+  shellfish: [[], ['a few gaping open', 'light for its size'], ['closed, a few barnacles', 'mostly shut, a bit muddy'], ['tightly shut, glossy shells', 'heavy, snapped shut when tapped']],
+  produce: [[], ['soft spot, dull skin', 'wrinkled at the stem'], ['decent, a little uneven', 'fine, picked a few days ago'], ['heavy, taut, deep colour', 'firm, still smells of the field']],
+  pantry: [[], ['faded label, little aroma', 'dusty tin, flat smell'], ['nothing special', 'sealed, this season'], ['rich aroma through the wrap', 'deep colour, sealed this week']],
+  dairy: [[], ['sweating a little, a bit stale', 'dry at the edges'], ["yesterday's batch", 'fine, a day old'], ["this morning's batch, still cool", 'fresh from the farm cart']],
+};
+
+export function cueFor(id: string, grade: number, variant: number): string {
+  const list = CUES[CUE_GROUP[id] ?? 'produce'][grade];
+  return list[variant % list.length];
+}
+
+/** A crate unit: mostly fine, some poor, a few prime. */
+export function rollGrade(): number {
+  const r = Math.random();
+  return r < 0.35 ? 1 : r < 0.82 ? 2 : 3;
+}

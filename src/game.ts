@@ -4,7 +4,7 @@
 import { CHEF_LOOK, randomLook, type Dir, type Item, type Look } from './art';
 import {
   BASKET_SIZE, BUDGET, BURNT, ingredient, INGREDIENTS, isSubset, machineLevel, matchRecipe, MENU_SIZE, nameOf, NEXT_PORT, recipe,
-  RECIPES, SLOP, STALLS, UPGRADES, type Machine, type Recipe, type StallId,
+  cueFor, GRADE_NAMES, RECIPES, rollGrade, SLOP, STALLS, UPGRADES, type Machine, type Recipe, type StallId,
 } from './data';
 import { CABIN, charAt, doorAt, GALLEY, isSolid, LOBBY, MAPS, MARKET, type Door, type MapId, type TileMap } from './map';
 import { MERCHANT_LOOKS, NPCS, STAFF_OPTIONS, type NpcDef, type StaffOption } from './npcs';
@@ -17,9 +17,12 @@ export interface Station {
   tx: number;
   ty: number;
   items: Item[];
+  /** quality grade of each item, parallel to items */
+  grades: number[];
   recipe: Recipe | null;
   t: number;
   result: Item | null;
+  resultQ: number;
   doneT: number;
   /** seconds this batch takes, after upgrades */
   dur: number;
@@ -46,12 +49,14 @@ export interface Ticket {
   state: 'pending' | 'open' | 'taken' | 'done' | 'missed';
   /** what actually went out, and how fresh the ticket still was */
   served?: string;
+  quality?: number;
   freshness?: number;
 }
 
 export interface PassSlot {
   tx: number;
   dish: Item | null;
+  q: number;
   claimed: boolean;
 }
 
@@ -67,6 +72,7 @@ export interface Waiter {
   task: null | { kind: 'drop'; ticket: Ticket } | { kind: 'pickup'; slot: PassSlot; ticket: Ticket };
   stage: 'off' | 'going' | 'back';
   carrying: Item | null;
+  carryingQ: number;
 }
 
 export interface Floater {
@@ -84,6 +90,8 @@ export interface MenuRow {
   heading?: boolean;
   enabled?: boolean;
   checked?: boolean;
+  /** draw the icon with this quality grade's look */
+  grade?: number;
   action?: () => void;
 }
 
@@ -146,6 +154,8 @@ export class Game {
   anim = 0;
   moving = false;
   hands: Item | null = null;
+  /** quality grade of what the chef holds */
+  handsQ = 2;
   readonly look = CHEF_LOOK;
 
   // world
@@ -170,6 +180,11 @@ export class Game {
   clock = MARKET_OPEN;
   money = BUDGET;
   stock = new Map<string, number>();
+  /** quality grades of every unit in stock, best first */
+  grades = new Map<string, number[]>();
+  /** the market crates you pick from, one per ingredient */
+  crates = new Map<string, number[]>();
+  crateFor: string | null = null;
   known = new Set<string>();
   menu: string[] = [];
   picks: string[] = [];
@@ -192,8 +207,8 @@ export class Game {
       for (let tx = 0; tx < GALLEY.w; tx++) {
         const c = charAt(GALLEY, tx, ty);
         const kind: Machine | null = c === 'S' ? 'stove' : c === 'C' ? 'board' : c === 'z' ? 'pot' : c === 'v' ? 'oven' : null;
-        if (kind) this.stations.push({ kind, tx, ty, items: [], recipe: null, t: 0, result: null, doneT: 0, dur: 1 });
-        if (c === 'X') this.pass.push({ tx, dish: null, claimed: false });
+        if (kind) this.stations.push({ kind, tx, ty, items: [], grades: [], recipe: null, t: 0, result: null, resultQ: 2, doneT: 0, dur: 1 });
+        if (c === 'X') this.pass.push({ tx, dish: null, q: 2, claimed: false });
       }
     }
     this.enterMap(MARKET, 13.5, 10.5, 'up');
@@ -220,10 +235,37 @@ export class Game {
     return n;
   }
 
-  private add(id: string, d: number) {
+  /** Adds or removes one unit; removing takes the given grade, else the worst one. Returns the grade moved. */
+  private add(id: string, d: number, q?: number): number {
+    const list = this.grades.get(id) ?? [];
+    let moved = q ?? 2;
+    if (d > 0) {
+      list.push(moved);
+      list.sort((a, b) => b - a);
+    } else {
+      const at = q !== undefined && list.includes(q) ? list.indexOf(q) : list.length - 1;
+      moved = list.splice(at, 1)[0] ?? 2;
+    }
+    if (list.length) this.grades.set(id, list);
+    else this.grades.delete(id);
     const n = this.count(id) + d;
     if (n > 0) this.stock.set(id, n);
     else this.stock.delete(id);
+    return moved;
+  }
+
+  /** Plate quality as a pay and rating multiplier: poor 0.85, fine 1, prime 1.15. */
+  plateFactor(q: number) {
+    return 0.7 + 0.15 * q;
+  }
+
+  crate(id: string): number[] {
+    let c = this.crates.get(id);
+    if (!c) {
+      c = Array.from({ length: 5 }, rollGrade);
+      this.crates.set(id, c);
+    }
+    return c;
   }
 
   get roaming() {
@@ -305,7 +347,7 @@ export class Game {
     this.tickets = [];
     this.waiters = this.staff.crew.map((c, i) => ({
       name: c.name, look: c.look, x: i ? 18.6 : 1.4, y: STRIP_Y[i % 2], homeX: i ? 18.6 : 1.4,
-      dir: 'down' as Dir, anim: 0, moving: false, task: null, stage: 'off' as const, carrying: null,
+      dir: 'down' as Dir, anim: 0, moving: false, task: null, stage: 'off' as const, carrying: null, carryingQ: 2,
     }));
     this.toast('Doors are open. Tickets will come in at the pass.');
     sfx('bell');
@@ -327,7 +369,7 @@ export class Game {
     const done = this.tickets.filter((t) => t.state === 'done');
     const total = done.length + this.tickets.filter((t) => t.state === 'missed').length;
     const real = done.filter((t) => t.served !== SLOP.id);
-    const dishQuality = done.length ? real.reduce((s, t) => s + Math.min(1, (0.5 + recipe(t.served!)!.price / 90) * this.quality(t.served!)), 0) / done.length : 0;
+    const dishQuality = done.length ? real.reduce((s, t) => s + Math.min(1, (0.45 + recipe(t.served!)!.price / 90) * this.quality(t.served!) * this.plateFactor(t.quality ?? 2)), 0) / done.length : 0;
     const variety = new Set(real.map((t) => t.served)).size / MENU_SIZE;
     const menu = 0.65 * dishQuality + 0.35 * Math.min(1, variety);
     const speed = done.length ? done.reduce((s, t) => s + (t.freshness ?? 0), 0) / done.length : 0;
@@ -341,6 +383,9 @@ export class Game {
   private reset() {
     this.money = BUDGET;
     this.stock.clear();
+    this.grades.clear();
+    this.crates.clear();
+    this.crateFor = null;
     this.known.clear();
     this.menu = [];
     this.picks = [];
@@ -354,8 +399,8 @@ export class Game {
     this.port = 'Marseille';
     this.day = 1;
     this.clock = MARKET_OPEN;
-    for (const s of this.stations) Object.assign(s, { items: [], recipe: null, t: 0, result: null, doneT: 0 });
-    for (const p of this.pass) Object.assign(p, { dish: null, claimed: false });
+    for (const s of this.stations) Object.assign(s, { items: [], grades: [], recipe: null, t: 0, result: null, resultQ: 2, doneT: 0 });
+    for (const p of this.pass) Object.assign(p, { dish: null, q: 2, claimed: false });
     this.phase = 'market';
     this.enterMap(MARKET, 13.5, 10.5, 'up');
   }
@@ -490,8 +535,11 @@ export class Game {
         s.t += dt;
         if (s.t >= s.dur) {
           s.result = s.recipe.id;
+          // slop is slop; everything else is as good as what went in
+          s.resultQ = s.recipe.id === SLOP.id ? 1 : Math.round(s.grades.reduce((a, b) => a + b, 0) / Math.max(1, s.grades.length));
           s.recipe = null;
           s.items = [];
+          s.grades = [];
           s.doneT = 0;
           sfx('ding');
         }
@@ -618,13 +666,14 @@ export class Game {
           sfx('bell');
         } else {
           w.carrying = w.task.slot.dish;
+          w.carryingQ = w.task.slot.q;
           w.task.slot.dish = null;
           w.task.slot.claimed = false;
           sfx('pick');
         }
         w.stage = 'back';
       } else {
-        if (w.task.kind === 'pickup') this.deliver(w.task.ticket, w.carrying!);
+        if (w.task.kind === 'pickup') this.deliver(w.task.ticket, w.carrying!, w.carryingQ);
         w.carrying = null;
         w.task = null;
         w.stage = 'off';
@@ -644,9 +693,10 @@ export class Game {
     s.dur = r.time / machineLevel(s.kind, this.owned).speed;
   }
 
-  private deliver(t: Ticket, dish: string) {
+  private deliver(t: Ticket, dish: string, q: number) {
     t.state = 'done';
     t.served = dish;
+    t.quality = q;
     this.served++;
     const at = { x: 9, y: 2.2 };
     if (dish === SLOP.id) {
@@ -658,10 +708,10 @@ export class Game {
       return;
     }
     const r = recipe(dish)!;
-    const pay = Math.round(r.price * this.quality(dish)) + Math.round(r.price * 0.5 * (t.freshness ?? 0));
+    const pay = Math.round(r.price * this.quality(dish) * this.plateFactor(q)) + Math.round(r.price * 0.5 * (t.freshness ?? 0));
     this.money += pay;
     this.earned += pay;
-    this.float(at.x, at.y, `+${pay}g`, '#ffe066');
+    this.float(at.x, at.y, q >= 3 ? `+${pay}g  prime!` : `+${pay}g`, q >= 3 ? '#9cf0ff' : '#ffe066');
     sfx('coin');
   }
 
@@ -784,7 +834,7 @@ export class Game {
       case 'pantry':
         if (this.phase !== 'service') return this.toast('The pantry opens when dinner service starts.');
         if (this.hands && ingredient(this.hands)) {
-          this.add(this.hands, 1);
+          this.add(this.hands, 1, this.handsQ);
           this.hands = null;
           sfx('place');
           return;
@@ -807,6 +857,7 @@ export class Game {
   }
 
   cancel() {
+    if (this.modal?.kind === 'shop' && this.crateFor) return this.closeCrate();
     if (this.modal) {
       this.modal = null;
       sfx('toss');
@@ -933,7 +984,8 @@ export class Game {
   private openStall(id: StallId) {
     const stall = STALLS[id];
     this.shopLine = stall.greeting;
-    this.modal = {
+    this.crateFor = null;
+    const m: Modal = {
       kind: 'shop',
       title: stall.name,
       speaker: stall.merchant,
@@ -941,50 +993,92 @@ export class Game {
       line: () => this.shopLine,
       subtitle: () => `Purse ${this.money}g   Basket ${this.basketCount()}/${BASKET_SIZE}`,
       index: 0,
-      rows: () => {
-        const rows: MenuRow[] = INGREDIENTS.filter((i) => i.stall === id).map((ing) => ({
-          label: `${ing.name}  ${ing.price}g`,
-          detail: this.count(ing.id) ? `x${this.count(ing.id)}` : undefined,
+      rows: () => (this.crateFor ? this.crateRows(this.crateFor) : this.stallRows(id)),
+    };
+    this.modal = m;
+  }
+
+  private stallRows(id: StallId): MenuRow[] {
+    const rows: MenuRow[] = INGREDIENTS.filter((i) => i.stall === id).map((ing) => ({
+      label: `${ing.name}  ${ing.price}g`,
+      detail: this.count(ing.id) ? `x${this.count(ing.id)}` : undefined,
+      icon: ing.id,
+      enabled: true,
+      action: () => {
+        this.crateFor = ing.id;
+        this.modal!.index = 1;
+        this.shopLine = pick(['Take your pick from the crate, same price for any of them.', 'Have a look and choose, chef. They are all the same price.', 'Go on, pick the one you like.']);
+        sfx('pick');
+      },
+    }));
+    const inBasket = INGREDIENTS.filter((i) => i.stall === id && this.count(i.id));
+    if (inBasket.length) {
+      rows.push({ label: 'Hand back', heading: true });
+      for (const ing of inBasket) {
+        rows.push({
+          label: `${ing.name}  +${ing.price}g`,
           icon: ing.id,
           enabled: true,
           action: () => {
-            if (this.basketCount() >= BASKET_SIZE) {
-              this.shopLine = 'Your basket is overflowing, chef! Hand something back first.';
-              return sfx('nope');
-            }
-            if (this.money < ing.price) {
-              this.shopLine = `${ing.name} is ${ing.price}g, and you have ${this.money}g. Maybe something cheaper?`;
-              return sfx('nope');
-            }
-            this.money -= ing.price;
-            this.spent += ing.price;
-            this.add(ing.id, 1);
-            this.shopLine = pick([`One ${ing.name.toLowerCase()}, merci! Anything else?`, `Excellent choice. That's ${this.count(ing.id)} now.`, `${ing.name}, wrapped and ready.`]);
-            sfx('coin');
+            this.money += ing.price;
+            this.spent -= ing.price;
+            this.add(ing.id, -1);
+            this.shopLine = 'No trouble, I\'ll put it back.';
+            sfx('toss');
           },
-        }));
-        const inBasket = INGREDIENTS.filter((i) => i.stall === id && this.count(i.id));
-        if (inBasket.length) {
-          rows.push({ label: 'Hand back', heading: true });
-          for (const ing of inBasket) {
-            rows.push({
-              label: `${ing.name}  +${ing.price}g`,
-              icon: ing.id,
-              enabled: true,
-              action: () => {
-                this.money += ing.price;
-                this.spent -= ing.price;
-                this.add(ing.id, -1);
-                this.shopLine = 'No trouble, I\'ll put it back.';
-                sfx('toss');
-              },
-            });
+        });
+      }
+    }
+    rows.push({ label: 'Leave the stall', enabled: true, action: () => this.cancel() });
+    return rows;
+  }
+
+  /** The crate for one ingredient: same price, mixed quality. Reading the cues is the skill. */
+  private crateRows(id: string): MenuRow[] {
+    const ing = ingredient(id)!;
+    const crate = this.crate(id);
+    const rows: MenuRow[] = [{ label: `${ing.name} crate, ${ing.price}g each`, heading: true }];
+    crate.forEach((grade, slot) => {
+      rows.push({
+        label: cueFor(id, grade, slot + this.crateSeed(id)),
+        icon: id,
+        grade,
+        enabled: true,
+        action: () => {
+          if (this.basketCount() >= BASKET_SIZE) {
+            this.shopLine = 'Your basket is overflowing, chef! Hand something back first.';
+            return sfx('nope');
           }
-        }
-        rows.push({ label: 'Leave the stall', enabled: true, action: () => this.cancel() });
-        return rows;
-      },
-    };
+          if (this.money < ing.price) {
+            this.shopLine = `${ing.name} is ${ing.price}g, and you have ${this.money}g. Maybe something cheaper?`;
+            return sfx('nope');
+          }
+          this.money -= ing.price;
+          this.spent += ing.price;
+          this.add(id, 1, grade);
+          crate[slot] = rollGrade();
+          this.shopLine = grade >= 3
+            ? pick(['Ooh, you have a good eye. That was the best of the lot.', 'The pick of the crate! You know your stuff.'])
+            : grade <= 1
+              ? pick([`That one? Well, it's your ${ing.name.toLowerCase()}.`, 'Hmm, I would have chosen another, but merci!'])
+              : pick([`One ${ing.name.toLowerCase()}, merci! Anything else?`, `${ing.name}, wrapped and ready.`]);
+          sfx(grade >= 3 ? 'ding' : 'coin');
+        },
+      });
+    });
+    rows.push({ label: 'Back to the stall', enabled: true, action: () => this.closeCrate() });
+    return rows;
+  }
+
+  private crateSeed(id: string) {
+    return id.length + (this.crates.get(id)?.reduce((a, b) => a + b, 0) ?? 0);
+  }
+
+  private closeCrate() {
+    this.crateFor = null;
+    if (this.modal) this.modal.index = 0;
+    this.shopLine = 'Anything else?';
+    sfx('pick');
   }
 
   private openGangway() {
@@ -1138,21 +1232,30 @@ export class Game {
     this.modal = {
       kind: 'list',
       title: 'Pantry',
-      subtitle: () => 'Take one ingredient at a time.',
+      subtitle: () => 'Take one ingredient at a time. Better ingredients make better plates.',
       index: 0,
       rows: () => {
-        const rows: MenuRow[] = INGREDIENTS.filter((i) => this.count(i.id)).map((ing) => ({
-          label: ing.name,
-          detail: `x${this.count(ing.id)}`,
-          icon: ing.id,
-          enabled: true,
-          action: () => {
-            this.add(ing.id, -1);
-            this.hands = ing.id;
-            this.modal = null;
-            sfx('pick');
-          },
-        }));
+        const rows: MenuRow[] = [];
+        for (const ing of INGREDIENTS) {
+          const grades = this.grades.get(ing.id) ?? [];
+          for (const g of [3, 2, 1]) {
+            const n = grades.filter((x) => x === g).length;
+            if (!n) continue;
+            rows.push({
+              label: `${ing.name}  ${GRADE_NAMES[g]}`,
+              detail: `x${n}`,
+              icon: ing.id,
+              grade: g,
+              enabled: true,
+              action: () => {
+                this.handsQ = this.add(ing.id, -1, g);
+                this.hands = ing.id;
+                this.modal = null;
+                sfx('pick');
+              },
+            });
+          }
+        }
         if (!rows.length) rows.push({ label: 'The pantry is empty.', heading: true });
         rows.push({ label: 'Close', enabled: true, action: () => this.cancel() });
         return rows;
@@ -1165,6 +1268,7 @@ export class Game {
     if (slot.dish) {
       if (slot.claimed || this.hands) return;
       this.hands = slot.dish;
+      this.handsQ = slot.q;
       slot.dish = null;
       sfx('pick');
       return;
@@ -1173,6 +1277,7 @@ export class Game {
     if (this.hands === BURNT) return this.toast('Nobody is eating that. Bin it.');
     if (!recipe(this.hands)) return this.toast('Only finished plates go on the pass.');
     slot.dish = this.hands;
+    slot.q = this.handsQ;
     this.hands = null;
     sfx('place');
   }
@@ -1181,6 +1286,7 @@ export class Game {
     if (s.result) {
       if (this.hands) return this.toast('Your hands are full.');
       this.hands = s.result;
+      this.handsQ = s.resultQ;
       s.result = null;
       sfx('pick');
       return;
@@ -1190,6 +1296,7 @@ export class Game {
       const back = s.items.pop();
       if (back) {
         this.hands = back;
+        this.handsQ = s.grades.pop() ?? 2;
         sfx('pick');
       }
       return;
@@ -1197,6 +1304,7 @@ export class Game {
     if (!ingredient(this.hands)) return this.toast('Plates go on the pass window. Burnt food goes in the bin.');
     if (s.kind === 'pot') {
       s.items = [this.hands];
+      s.grades = [this.handsQ];
       this.hands = null;
       this.startCooking(s, SLOP);
       sfx('place');
@@ -1209,6 +1317,7 @@ export class Game {
       return this.toast(next.length > 1 ? "That doesn't make anything on tonight's menu." : `Nothing on the menu starts with ${nameOf(this.hands).toLowerCase()} here. The slop pot takes anything.`);
     }
     s.items = next;
+    s.grades.push(this.handsQ);
     this.hands = null;
     sfx('place');
     const exact = fits.find((r) => r.inputs.length === next.length);

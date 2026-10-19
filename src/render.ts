@@ -1,7 +1,7 @@
 // Draws the world to a low-res canvas, then the HUD on top at screen resolution.
 
 import { floorSprite, hullStrip, icon, personSprite, propSprite, type Look, type Dir, type Item } from './art';
-import { BASKET_SIZE, BUDGET, INGREDIENTS, MENU_SIZE, NEXT_PORT, SLOP, STALLS, nameOf, recipe, type StallId } from './data';
+import { BASKET_SIZE, BUDGET, GRADE_NAMES, INGREDIENTS, MENU_SIZE, NEXT_PORT, SLOP, STALLS, nameOf, recipe, type StallId } from './data';
 import { SERVICE_END, type Game, type MenuRow, type Modal, type Target, type Ticket } from './game';
 import { drawBlock, hash2, TILE, tileCenter, toScreen, toWorld } from './grid';
 import { charAt, floorAt, isDoor, isLand, isWall, type TileMap } from './map';
@@ -182,7 +182,18 @@ export function renderWorld(game: Game, g: CanvasRenderingContext2D, W: number, 
       if (!slot.dish) continue;
       const c = tileCenter(slot.tx, 3);
       const dish = slot.dish;
-      list.push({ depth: 4.02, draw: () => g.drawImage(icon(dish), c.x + ox - 4, c.y + oy - 17) });
+      const q = slot.q;
+      list.push({
+        depth: 4.02,
+        draw: () => {
+          g.drawImage(icon(dish), c.x + ox - 4, c.y + oy - 17);
+          if (q >= 3 && dish !== SLOP.id && Math.floor(t * 3) % 3 === 0) {
+            g.fillStyle = '#ffffff';
+            g.fillRect(c.x + ox + 3, c.y + oy - 19, 1, 3);
+            g.fillRect(c.x + ox + 2, c.y + oy - 18, 3, 1);
+          }
+        },
+      });
     }
     for (const w of game.waiters) {
       const note = w.task?.kind === 'drop' && w.stage === 'going';
@@ -476,6 +487,24 @@ function iconAt(c: CanvasRenderingContext2D, item: Item, x: number, y: number, s
   c.drawImage(icon(item), Math.round(x), Math.round(y), size, size);
 }
 
+/** Subtle look of a quality grade on an icon: a glint for prime, bruises for poor. */
+function gradeMarks(c: CanvasRenderingContext2D, x: number, y: number, size: number, grade: number | undefined) {
+  if (!grade || grade === 2) return;
+  const px = size / 8;
+  if (grade >= 3) {
+    c.fillStyle = 'rgba(255,255,255,0.95)';
+    c.fillRect(x + 5 * px, y + 2 * px, px, px);
+    c.fillStyle = 'rgba(255,255,255,0.55)';
+    c.fillRect(x + 6 * px, y + 3 * px, px, px);
+  } else {
+    c.fillStyle = 'rgba(70,45,20,0.35)';
+    c.fillRect(x + px, y + px, size - 2 * px, size - 2 * px);
+    c.fillStyle = 'rgba(90,55,25,0.9)';
+    c.fillRect(x + 2 * px, y + 4 * px, px, px);
+    c.fillRect(x + 5 * px, y + 5 * px, px, px);
+  }
+}
+
 function clockText(min: number): string {
   const h = Math.floor(min / 60);
   const m = Math.floor((min % 60) / 10) * 10;
@@ -642,7 +671,9 @@ export function renderHud(game: Game, c: CanvasRenderingContext2D, view: View, u
     panel(c, sx, sy, sw, sw, u);
     if (game.hands) {
       iconAt(c, game.hands, sx + 3 * u, sy + 3 * u, 16 * u);
-      text(c, nameOf(game.hands), sx + sw / 2, sy - 10 * u, u, 6, '#ffffff', 'center');
+      if (game.hands !== BURNT_ID) gradeMarks(c, sx + 3 * u, sy + 3 * u, 16 * u, game.handsQ);
+      const graded = game.hands === BURNT_ID || game.hands === SLOP.id ? nameOf(game.hands) : `${nameOf(game.hands)}, ${GRADE_NAMES[game.handsQ]}`;
+      text(c, graded, hud.narrow ? sx + sw : sx + sw / 2, sy - 10 * u, u, 6, '#ffffff', hud.narrow ? 'right' : 'center');
     } else {
       text(c, 'empty hands', sx + sw / 2, sy - 10 * u, u, 5, '#9aa6b2', 'center');
     }
@@ -877,6 +908,7 @@ function drawRows(c: CanvasRenderingContext2D, m: Modal, rows: MenuRow[], x: num
     }
     if (r.icon) {
       iconAt(c, r.icon, tx, ry + 2 * u, 9 * u);
+      gradeMarks(c, tx, ry + 2 * u, 9 * u, r.grade);
       tx += 12 * u;
     }
     const col = r.enabled === false ? '#7a8290' : '#ffffff';
@@ -970,11 +1002,19 @@ function drawShop(game: Game, m: Modal, rows: MenuRow[], c: CanvasRenderingConte
   c.fillRect(scene.x, counterY + 4 * u, scene.w, counterH - 4 * u);
   c.fillStyle = '#6b4a2a';
   for (let px = scene.x + 10 * u; px < scene.x + scene.w; px += 24 * u) c.fillRect(px, counterY + 4 * u, u, counterH);
-  const goods = INGREDIENTS.filter((i) => i.stall === stallId);
+  const goods = game.crateFor ? game.crate(game.crateFor).map(() => game.crateFor!) : INGREDIENTS.filter((i) => i.stall === stallId).map((i) => i.id);
+  if (game.crateFor) {
+    const cw = Math.min(scene.w - 8 * u, 110 * u);
+    c.fillStyle = '#9c6b3f';
+    c.fillRect(scene.x + scene.w / 2 - cw / 2, counterY - 8 * u, cw, 10 * u);
+    c.fillStyle = '#7a5230';
+    c.fillRect(scene.x + scene.w / 2 - cw / 2, counterY - 4 * u, cw, u);
+  }
   const gs = Math.min(16 * u, (scene.w - 8 * u) / goods.length - 4 * u);
-  goods.forEach((ing, i) => {
+  goods.forEach((id, i) => {
     const gx = scene.x + scene.w / 2 - (goods.length * (gs + 4 * u)) / 2 + i * (gs + 4 * u) + 2 * u;
-    iconAt(c, ing.id, gx, counterY - gs + 3 * u, gs);
+    iconAt(c, id, gx, counterY - gs + 3 * u, gs);
+    if (game.crateFor) gradeMarks(c, gx, counterY - gs + 3 * u, gs, game.crate(game.crateFor)[i]);
   });
   c.restore();
   c.fillStyle = '#e8cf7a';
@@ -1086,6 +1126,7 @@ function drawSummary(game: Game, c: CanvasRenderingContext2D, u: number, CW: num
   const profit = game.money - BUDGET;
   const lines = [
     `Served ${game.served}   Left hungry ${game.missed}   Served slop ${game.grumbles}`,
+    plateLine(game),
     `Spent today ${game.spent}g   Earned at dinner ${game.earned}g`,
     `${profit >= 0 ? 'Profit' : 'Loss'} ${Math.abs(profit)}g   Purse ${game.money}g`,
     `The Butter Moon sails through the night toward ${NEXT_PORT.name}.`,
@@ -1099,6 +1140,13 @@ function drawSummary(game: Game, c: CanvasRenderingContext2D, u: number, CW: num
     ly += 2 * u;
   }
   text(c, 'Press E or tap to continue', CW / 2, y + h - 13 * u, u, 6, '#ffe9a8', 'center');
+}
+
+function plateLine(game: Game): string {
+  const plates = game.tickets.filter((t) => t.state === 'done' && t.served !== SLOP.id);
+  if (!plates.length) return 'No proper plates went out tonight.';
+  const n = (g: number) => plates.filter((t) => (t.quality ?? 2) === g).length;
+  return `Plates: ${n(3)} prime, ${n(2)} fine, ${n(1)} poor`;
 }
 
 function overlay(c: CanvasRenderingContext2D, CW: number, CH: number, u: number, title: string, lines: string[]) {
