@@ -169,3 +169,39 @@ export function rollGrade(): number {
   const r = Math.random();
   return r < 0.35 ? 1 : r < 0.82 ? 2 : 3;
 }
+
+// ------------------------------------------------------------ hidden sellers
+
+export interface SecretSeller {
+  id: string;
+  name: string;
+  merchant: string;
+  greeting: string;
+  /** what they sell, always prime, at market price, while it lasts */
+  items: { id: string; stock: number }[];
+  /** asked before they will trade */
+  favour?: { item: string; ask: string; thanks: string };
+}
+
+/** Sellers tucked away in Le Panier, behind the market. Finding them is the effort; their goods are all prime. */
+export const SECRET_SELLERS: Record<string, SecretSeller> = {
+  mathilde: {
+    id: 'mathilde',
+    name: "Mathilde's garden cart",
+    merchant: 'Mathilde',
+    greeting: 'You found my little cart! Everything here grew on my roof terrace. Picked at dawn, every one perfect.',
+    items: [{ id: 'tomato', stock: 3 }, { id: 'herbs', stock: 3 }, { id: 'lemon', stock: 2 }, { id: 'courgette', stock: 2 }],
+  },
+  raymond: {
+    id: 'raymond',
+    name: "Raymond's boat",
+    merchant: 'Raymond',
+    greeting: 'Caught this morning past the Frioul islands. The market never sees fish like these.',
+    items: [{ id: 'fish', stock: 3 }, { id: 'mussels', stock: 3 }],
+    favour: {
+      item: 'bread',
+      ask: "My catch? Maybe. But I've been out since four and haven't eaten a thing. Bring me a baguette and we'll talk.",
+      thanks: 'Ah, still warm! You are a good one, chef. Come, look at the catch.',
+    },
+  },
+};

@@ -2,7 +2,7 @@
 
 import { floorSprite, hullStrip, icon, personSprite, propSprite, type Look, type Dir, type Item } from './art';
 import { BASKET_SIZE, BUDGET, GRADE_NAMES, INGREDIENTS, MENU_SIZE, NEXT_PORT, SLOP, STALLS, nameOf, recipe, type StallId } from './data';
-import { SERVICE_END, type Game, type MenuRow, type Modal, type Target, type Ticket } from './game';
+import { SERVICE_END, type Game, type MenuRow, type Modal, type Planter, type Target, type Ticket } from './game';
 import { drawBlock, hash2, TILE, tileCenter, toScreen, toWorld } from './grid';
 import { charAt, floorAt, isDoor, isLand, isWall, type TileMap } from './map';
 
@@ -110,7 +110,7 @@ export function renderWorld(game: Game, g: CanvasRenderingContext2D, W: number, 
         g.fillStyle = 'rgba(0,0,0,0.18)';
         g.fillRect(sx, sy, TILE, 3);
       }
-      if (c === 'D' && !tallWall(m, x, y)) drawDoormat(g, sx, sy);
+      if (c === 'D' && !tallWall(m, x, y) && m.outside === 'void') drawDoormat(g, sx, sy);
     }
   }
 
@@ -132,6 +132,23 @@ export function renderWorld(game: Game, g: CanvasRenderingContext2D, W: number, 
         list.push({ depth: y + 1, draw: () => drawRail(g, m, x, y, ox, oy) });
         continue;
       }
+      if (m.id === 'market' && c === 'D') {
+        // the open house door up into Le Panier
+        const sp = propSprite('I')!;
+        const hx = x * TILE + ox;
+        const hy = y * TILE + oy;
+        list.push({
+          depth: y + 1,
+          draw: () => {
+            g.drawImage(sp.canvas, hx + sp.ox, hy + sp.oy);
+            g.fillStyle = '#1a1420';
+            g.fillRect(hx + 5, hy + 3, 6, 13);
+            g.fillStyle = '#c4915c';
+            g.fillRect(hx + 4, hy + 14, 8, 2);
+          },
+        });
+        continue;
+      }
       if (isWall(c) || isDoor(c)) continue;
       if (c === 'v' && !game.owned.has('oven')) {
         list.push({ depth: y + 1, draw: () => drawEmptySlot(g, x * TILE + ox, y * TILE + oy, t) });
@@ -141,7 +158,14 @@ export function renderWorld(game: Game, g: CanvasRenderingContext2D, W: number, 
       if (!sp) continue;
       const sx = x * TILE + ox + sp.ox;
       const sy = y * TILE + oy + sp.oy;
-      list.push({ depth: y + 1, draw: () => g.drawImage(sp.canvas, sx, sy) });
+      const planter = c === '%' ? game.planters.find((pl) => pl.tx === x && pl.ty === y) : undefined;
+      list.push({
+        depth: y + 1,
+        draw: () => {
+          g.drawImage(sp.canvas, sx, sy);
+          if (planter) drawCrop(g, game, planter, x * TILE + ox, y * TILE + oy, t);
+        },
+      });
     }
   }
 
@@ -317,6 +341,34 @@ function drawDoormat(g: CanvasRenderingContext2D, sx: number, sy: number) {
   g.fillRect(sx + 3, sy + 11, 10, 1);
 }
 
+/** What grows in a sun-deck planter: wet soil once watered, fruit once ripe. */
+function drawCrop(g: CanvasRenderingContext2D, game: Game, p: Planter, sx: number, sy: number, t: number) {
+  const watered = p.wateredDay === game.day;
+  if (watered) {
+    g.fillStyle = '#3a2412';
+    g.fillRect(sx + 1, sy - 2, 14, 5);
+  }
+  const ripe = game.ripe(p);
+  const picked = p.harvestedDay === game.day;
+  const leaf = p.crop === 'herbs' ? '#5c8f3a' : '#3f8f3f';
+  const fruit = p.crop === 'tomato' ? '#e53935' : p.crop === 'courgette' ? '#2f6f2f' : '#a8d67a';
+  for (let i = 0; i < 3; i++) {
+    const px = sx + 2 + i * 5;
+    const h = picked ? 3 : ripe ? 8 : watered ? 6 : 5;
+    g.fillStyle = leaf;
+    g.fillRect(px + 1, sy - 2 - h, 2, h);
+    g.fillRect(px, sy - 2 - h, 4, 2);
+    if (ripe) {
+      g.fillStyle = fruit;
+      g.fillRect(px + (i % 2), sy - 6, 3, 3);
+    }
+  }
+  if (ripe && Math.floor(t * 2) % 2) {
+    g.fillStyle = '#ffffff';
+    g.fillRect(sx + 13, sy - 12, 1, 1);
+  }
+}
+
 /** Where a machine could go once it is bought. */
 function drawEmptySlot(g: CanvasRenderingContext2D, sx: number, sy: number, t: number) {
   g.fillStyle = Math.floor(t * 2) % 2 ? 'rgba(255,224,102,0.7)' : 'rgba(255,224,102,0.35)';
@@ -400,7 +452,7 @@ function bar(g: CanvasRenderingContext2D, x: number, y: number, f: number, col: 
 
 const TARGET_HEIGHT: Record<string, number> = {
   F: 32, S: 22, C: 22, M: 16, U: 16, V: 18, O: 18, B: 16, W: 22, X: 30, v: 30, z: 20, j: 18,
-  A: 34, P: 34, E: 34, Y: 34, G: 30, g: 6,
+  A: 34, P: 34, E: 34, Y: 34, G: 30, g: 6, '!': 26, '%': 16,
 };
 
 function drawArrow(g: CanvasRenderingContext2D, game: Game, target: Target, ox: number, oy: number, t: number) {
@@ -613,6 +665,7 @@ export function renderHud(game: Game, c: CanvasRenderingContext2D, view: View, u
       `Morning: shop the Vieux-Port market. Budget ${BUDGET}g, basket space ${BASKET_SIZE}.`,
       'Afternoon: roam the ship and talk to people. Hire waiters from Henri in the restaurant, order machines from the catalog in your cabin, and taste combinations at the galley chalkboard to fill your recipe book.',
       'Evening: cook in the galley. Waiters bring tickets in; put finished plates on the pass. Then the guests give you stars.',
+      'Better ingredients make better plates. Pick the best from each crate, fish off the lido, water the sun-deck garden, and explore the old town for sellers the market never sees.',
       'Tomorrow: Naples.',
       '',
       'Move: WASD or arrows   Use: E or Space   Back: Esc   Recipe book: N   Mute: M',
@@ -857,6 +910,7 @@ function drawModal(game: Game, m: Modal, c: CanvasRenderingContext2D, u: number,
   if (m.index >= rows.length) m.index = rows.length - 1;
   if (m.kind === 'shop') return drawShop(game, m, rows, c, u, CW, CH);
   if (m.kind === 'talk') return drawTalk(m, rows, c, u, CW, CH);
+  if (m.kind === 'fish') return drawFishing(game, m, rows, c, u, CW, CH);
   c.fillStyle = 'rgba(12,20,40,0.55)';
   c.fillRect(0, 0, CW, CH);
   const w = Math.min(CW - 12 * u, 250 * u);
@@ -936,8 +990,8 @@ const STALL_COLORS: Record<StallId, { awning: string; sky: string }> = {
 function drawShop(game: Game, m: Modal, rows: MenuRow[], c: CanvasRenderingContext2D, u: number, CW: number, CH: number) {
   c.fillStyle = 'rgba(12,20,40,0.6)';
   c.fillRect(0, 0, CW, CH);
-  const stallId = (Object.keys(STALLS) as StallId[]).find((id) => STALLS[id].name === m.title) ?? 'fish';
-  const col = STALL_COLORS[stallId];
+  const stallId = (Object.keys(STALLS) as StallId[]).find((id) => STALLS[id].name === m.title);
+  const col = stallId ? STALL_COLORS[stallId] : { awning: '#7a4a8a', sky: '#f3c9a0' };
   const w = Math.min(CW - 12 * u, 400 * u);
   const h = Math.min(CH - 12 * u, 250 * u);
   const x = CW / 2 - w / 2;
@@ -1002,7 +1056,9 @@ function drawShop(game: Game, m: Modal, rows: MenuRow[], c: CanvasRenderingConte
   c.fillRect(scene.x, counterY + 4 * u, scene.w, counterH - 4 * u);
   c.fillStyle = '#6b4a2a';
   for (let px = scene.x + 10 * u; px < scene.x + scene.w; px += 24 * u) c.fillRect(px, counterY + 4 * u, u, counterH);
-  const goods = game.crateFor ? game.crate(game.crateFor).map(() => game.crateFor!) : INGREDIENTS.filter((i) => i.stall === stallId).map((i) => i.id);
+  const goods = game.crateFor
+    ? game.crate(game.crateFor).map(() => game.crateFor!)
+    : stallId ? INGREDIENTS.filter((i) => i.stall === stallId).map((i) => i.id) : rows.filter((r) => r.icon).map((r) => r.icon!);
   if (game.crateFor) {
     const cw = Math.min(scene.w - 8 * u, 110 * u);
     c.fillStyle = '#9c6b3f';
@@ -1014,7 +1070,7 @@ function drawShop(game: Game, m: Modal, rows: MenuRow[], c: CanvasRenderingConte
   goods.forEach((id, i) => {
     const gx = scene.x + scene.w / 2 - (goods.length * (gs + 4 * u)) / 2 + i * (gs + 4 * u) + 2 * u;
     iconAt(c, id, gx, counterY - gs + 3 * u, gs);
-    if (game.crateFor) gradeMarks(c, gx, counterY - gs + 3 * u, gs, game.crate(game.crateFor)[i]);
+    gradeMarks(c, gx, counterY - gs + 3 * u, gs, game.crateFor ? game.crate(game.crateFor)[i] : stallId ? 2 : 3);
   });
   c.restore();
   c.fillStyle = '#e8cf7a';
@@ -1093,6 +1149,50 @@ function drawTalk(m: Modal, rows: MenuRow[], c: CanvasRenderingContext2D, u: num
   const cy = y - ch - 12 * u;
   panel(c, cx, cy, cw, ch, u);
   drawRows(c, m, rows, cx, cy + 4 * u, cw, ch - 8 * u, u, { x: cx + cw / 2, y: cy - 8 * u });
+}
+
+/** The fishing bar: a float drifting back and forth over a bite zone with a gold centre. */
+function drawFishing(game: Game, m: Modal, rows: MenuRow[], c: CanvasRenderingContext2D, u: number, CW: number, CH: number) {
+  const f = game.fishing;
+  const w = Math.min(CW - 12 * u, 280 * u);
+  const h = (78 + rows.length * 13) * u;
+  const x = CW / 2 - w / 2;
+  const y = CH - h - 8 * u;
+  panel(c, x, y, w, h, u, 'rgba(29,29,43,0.94)');
+  text(c, m.title, x + 8 * u, y + 5 * u, u, 8, '#ffe066');
+  const sub = wrap(c, m.subtitle(), w - 16 * u, u, 5);
+  sub.forEach((l, i) => text(c, l, x + 8 * u, y + (17 + i * 7) * u, u, 5, '#c9d3dc'));
+  const bx = x + 12 * u;
+  const bw = w - 24 * u;
+  const by = y + 38 * u;
+  const bh = 14 * u;
+  // water
+  c.fillStyle = '#1d6a98';
+  c.fillRect(bx, by, bw, bh);
+  c.fillStyle = 'rgba(127,200,239,0.5)';
+  for (let i = 0; i < bw; i += 10 * u) c.fillRect(bx + i + ((game.time * 20 * u) % (10 * u)), by + 3 * u, 4 * u, u);
+  // bite zone: fine band, poor fringe, gold centre
+  const zx = (v: number) => bx + Math.max(0, Math.min(1, v)) * bw;
+  c.fillStyle = 'rgba(95,207,122,0.25)';
+  c.fillRect(zx(f.zone - 0.18), by, zx(f.zone + 0.18) - zx(f.zone - 0.18), bh);
+  c.fillStyle = 'rgba(95,207,122,0.55)';
+  c.fillRect(zx(f.zone - 0.12), by, zx(f.zone + 0.12) - zx(f.zone - 0.12), bh);
+  c.fillStyle = '#ffd23f';
+  c.fillRect(zx(f.zone - 0.05), by, zx(f.zone + 0.05) - zx(f.zone - 0.05), bh);
+  // float
+  const fx = zx(game.floatPos());
+  const bob = f.result === null ? Math.round(Math.sin(game.time * 9) * u) : 0;
+  c.fillStyle = '#1d1d2b';
+  c.fillRect(fx - 3 * u, by - 4 * u + bob, 6 * u, 10 * u);
+  c.fillStyle = '#e8452c';
+  c.fillRect(fx - 2 * u, by - 3 * u + bob, 4 * u, 4 * u);
+  c.fillStyle = '#ffffff';
+  c.fillRect(fx - 2 * u, by + u + bob, 4 * u, 4 * u);
+  if (f.result) {
+    iconAt(c, 'fish', x + w - 30 * u, y + 4 * u, 16 * u);
+    gradeMarks(c, x + w - 30 * u, y + 4 * u, 16 * u, f.result);
+  }
+  drawRows(c, m, rows, x, y + 60 * u, w, rows.length * 13 * u, u, { x: CW / 2, y: y - 8 * u });
 }
 
 function drawSummary(game: Game, c: CanvasRenderingContext2D, u: number, CW: number, CH: number) {

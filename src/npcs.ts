@@ -14,6 +14,8 @@ export interface NpcDef {
   /** wanders around instead of standing at a post */
   stroll?: boolean;
   facing?: 'up' | 'down' | 'left' | 'right';
+  /** a hidden seller: talking opens their wares */
+  seller?: string;
 }
 
 const WAITER = { w: '#2b2b3a', g: '#1d1d2b', r: '#ffffff', b: '#1d1d2b' };
@@ -28,7 +30,11 @@ export const NPCS: NpcDef[] = [
   { name: 'Fanny', map: 'market', x: 13.5, y: 6.5, stroll: true, look: makeLook('bun', { w: '#3fb6c9', g: '#2a8899', h: '#a8461f' }),
     lines: ['Bonjour, chef! Buying for the big ship?', 'Bouillabaisse needs good rockfish, a ripe tomato and real saffron. Do not skimp on the saffron.'] },
   { name: 'Marius', map: 'market', x: 23.5, y: 10.5, stroll: true, look: makeLook('short', { w: '#e9e4d4', g: '#c8b38a', h: '#b5b5b5' }),
-    lines: ['Forty years I have fished this harbour.', 'Mussels and garlic, a splash of the good stuff... that is supper.'] },
+    lines: ['Forty years I have fished this harbour.', 'Mussels and garlic, a splash of the good stuff... that is supper.', 'Want the real thing? The open door at the end of the row goes up into Le Panier. The old-timers sell there.'] },
+
+  // Le Panier, the old quarter behind the market
+  { name: 'Mathilde', map: 'alley', x: 3.5, y: 3.6, facing: 'down', seller: 'mathilde', look: makeLook('sunhat', { w: '#b06a8a', g: '#8a4568', h: '#b5b5b5', s: '#f1c27d', S: '#d9a066' }), lines: [] },
+  { name: 'Raymond', map: 'alley', x: 18.5, y: 3.6, facing: 'down', seller: 'raymond', look: makeLook('short', { w: '#2d3550', g: '#1d1d2b', r: '#e8452c', h: '#e9e4d4', s: '#c68642', S: '#a0652d' }), lines: [] },
 
   // Lido deck
   { name: 'Captain Margot', map: 'lido', x: 30.5, y: 6.5, facing: 'left', look: makeLook('short', { w: '#ffffff', g: '#c9d3dc', r: '#e3b54a', b: '#1c2d4a', h: '#5a3825' }),

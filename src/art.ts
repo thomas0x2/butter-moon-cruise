@@ -589,6 +589,23 @@ export function propSprite(ch: string): Sprite | null {
         rect(g, '#2b3138', x + 14, y - 1, 1, 3);
       });
       break;
+    case '!':
+      s = prop((g, x, y) => {
+        drawBlock(g, x + 3, y + 8, 10, 7, 6, WOOD);
+        rect(g, '#6b4a2a', x + 4, y - 18, 2, 22);
+        rect(g, '#2b2b3a', x + 5, y - 22, 1, 6);
+        rect(g, '#d8dde3', x + 6, y - 22, 6, 1);
+        rect(g, '#d8dde3', x + 12, y - 21, 1, 12);
+        rect(g, '#e8452c', x + 11, y - 9, 3, 2);
+        drawBlock(g, x + 8, y + 9, 6, 5, 6, { top: '#5b8fb0', front: '#3d6f90', edge: '#9fc6dc' });
+      });
+      break;
+    case '%':
+      s = prop((g, x, y) => {
+        drawBlock(g, x, y + 4, 16, 11, 7, WOOD);
+        rect(g, '#5a3a1e', x + 1, y - 2, 14, 5);
+      });
+      break;
     case 'o':
       s = prop((g, x, y) => {
         rect(g, '#6b7682', x + 7, y + 2, 2, 12);

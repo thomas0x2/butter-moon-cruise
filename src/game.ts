@@ -4,9 +4,9 @@
 import { CHEF_LOOK, randomLook, type Dir, type Item, type Look } from './art';
 import {
   BASKET_SIZE, BUDGET, BURNT, ingredient, INGREDIENTS, isSubset, machineLevel, matchRecipe, MENU_SIZE, nameOf, NEXT_PORT, recipe,
-  cueFor, GRADE_NAMES, RECIPES, rollGrade, SLOP, STALLS, UPGRADES, type Machine, type Recipe, type StallId,
+  cueFor, GRADE_NAMES, RECIPES, rollGrade, SECRET_SELLERS, SLOP, STALLS, UPGRADES, type Machine, type Recipe, type SecretSeller, type StallId,
 } from './data';
-import { CABIN, charAt, doorAt, GALLEY, isSolid, LOBBY, MAPS, MARKET, type Door, type MapId, type TileMap } from './map';
+import { CABIN, charAt, doorAt, GALLEY, isSolid, LIDO, LOBBY, MAPS, MARKET, type Door, type MapId, type TileMap } from './map';
 import { MERCHANT_LOOKS, NPCS, STAFF_OPTIONS, type NpcDef, type StaffOption } from './npcs';
 import { sfx } from './sound';
 
@@ -96,7 +96,7 @@ export interface MenuRow {
 }
 
 export interface Modal {
-  kind: 'list' | 'shop' | 'talk';
+  kind: 'list' | 'shop' | 'talk' | 'fish';
   title: string;
   subtitle: () => string;
   rows: () => MenuRow[];
@@ -117,7 +117,29 @@ export type Target =
   | { kind: 'locked'; tx: number; ty: number; text: string }
   | { kind: 'board'; tx: number; ty: number }
   | { kind: 'catalog'; tx: number; ty: number }
+  | { kind: 'rod'; tx: number; ty: number }
+  | { kind: 'planter'; tx: number; ty: number; planter: Planter }
   | { kind: 'npc'; tx: number; ty: number; npc: Npc };
+
+export interface Planter {
+  tx: number;
+  ty: number;
+  crop: string;
+  wateredDay: number;
+  /** clock minute it was watered; it ripens an hour later */
+  wateredAt: number;
+  harvestedDay: number;
+}
+
+/** The float bobbing on the bar; reel in while it sits in the gold for a prime catch. */
+export interface Fishing {
+  t: number;
+  speed: number;
+  /** centre of the bite zone, 0..1 along the bar */
+  zone: number;
+  result: 0 | 1 | 2 | 3 | null;
+  castsLeft: number;
+}
 
 export interface Rating {
   stars: number;
@@ -185,6 +207,11 @@ export class Game {
   /** the market crates you pick from, one per ingredient */
   crates = new Map<string, number[]>();
   crateFor: string | null = null;
+  planters: Planter[] = [];
+  /** hidden sellers who have had their favour done, and what they have left */
+  favours = new Set<string>();
+  sellerStock = new Map<string, number>();
+  fishing: Fishing = { t: 0, speed: 2, zone: 0.5, result: null, castsLeft: 3 };
   known = new Set<string>();
   menu: string[] = [];
   picks: string[] = [];
@@ -211,7 +238,23 @@ export class Game {
         if (c === 'X') this.pass.push({ tx, dish: null, q: 2, claimed: false });
       }
     }
+    this.resetPlanters();
     this.enterMap(MARKET, 13.5, 10.5, 'up');
+  }
+
+  private resetPlanters() {
+    const crops = ['herbs', 'tomato', 'courgette'];
+    this.planters = [];
+    for (let ty = 0; ty < LIDO.h; ty++) {
+      for (let tx = 0; tx < LIDO.w; tx++) {
+        if (charAt(LIDO, tx, ty) === '%') this.planters.push({ tx, ty, crop: crops[this.planters.length % crops.length], wateredDay: 0, wateredAt: 0, harvestedDay: 0 });
+      }
+    }
+  }
+
+  /** Ripe once watered today and given an hour of sun. */
+  ripe(p: Planter) {
+    return p.wateredDay === this.day && this.clock >= p.wateredAt + 60 && p.harvestedDay !== this.day;
   }
 
   // ------------------------------------------------------------ helpers
@@ -294,7 +337,7 @@ export class Game {
     this.faceX = dir === 'left' ? -1 : dir === 'right' ? 1 : 0;
     this.faceY = dir === 'up' ? -1 : dir === 'down' ? 1 : 0;
     this.roomBanner = 2.2;
-    const onShip = m !== MARKET;
+    const onShip = m !== MARKET && m.id !== 'alley';
     const defs = NPCS.filter((n) => n.map === m.id && !(this.phase === 'service' && n.map === 'restaurant'));
     const extras: NpcDef[] = [];
     const crowd = m.id === 'market' ? 4 : m.id === 'lido' ? 3 : m.id === 'lobby' ? 1 : 0;
@@ -386,6 +429,10 @@ export class Game {
     this.grades.clear();
     this.crates.clear();
     this.crateFor = null;
+    this.resetPlanters();
+    this.fishing.castsLeft = 3;
+    this.favours.clear();
+    this.sellerStock.clear();
     this.known.clear();
     this.menu = [];
     this.picks = [];
@@ -418,6 +465,7 @@ export class Game {
     for (const t of this.toasts) t.t -= dt;
     this.toasts = this.toasts.filter((t) => t.t > 0);
     this.updateNpcs(dt);
+    if (this.modal?.kind === 'fish' && this.fishing.result === null) this.fishing.t += dt;
     if (this.warp) return this.updateWarp(dt);
     if (!this.roaming) return;
 
@@ -742,6 +790,8 @@ export class Game {
         }
         if (c === 'g') consider({ kind: 'locked', tx, ty, text: `The gangway is up. Next stop: ${NEXT_PORT.name}.` });
         if (this.map === CABIN && c === 'j') consider({ kind: 'catalog', tx, ty });
+        if (this.map === LIDO && c === '!') consider({ kind: 'rod', tx, ty });
+        if (this.map === LIDO && c === '%') consider({ kind: 'planter', tx, ty, planter: this.planters.find((p) => p.tx === tx && p.ty === ty)! });
         if (this.map !== GALLEY) continue;
         if (PANTRY_CHARS.has(c)) consider({ kind: 'pantry', tx, ty });
         else if (c === 'W') consider({ kind: 'board', tx, ty });
@@ -772,6 +822,15 @@ export class Game {
         return service ? "Tonight's menu" : "Plan tonight's menu";
       case 'catalog':
         return "Ship chandler's catalog";
+      case 'rod':
+        return this.fishing.castsLeft ? `Fish off the rail (${this.fishing.castsLeft} casts left)` : 'Rod stand';
+      case 'planter': {
+        const p = t.planter;
+        if (this.ripe(p)) return `Harvest ${nameOf(p.crop).toLowerCase()}`;
+        if (p.harvestedDay === this.day) return 'Harvested today';
+        if (p.wateredDay === this.day) return `${nameOf(p.crop)} ripening in the sun`;
+        return `Water the ${nameOf(p.crop).toLowerCase()}`;
+      }
       case 'pantry':
         if (!service) return 'Pantry';
         if (this.hands && ingredient(this.hands)) return `Put back ${held}`;
@@ -831,6 +890,10 @@ export class Game {
         return this.phase === 'afternoon' ? this.openWorkbench() : this.openMenuCard();
       case 'catalog':
         return this.openCatalog();
+      case 'rod':
+        return this.openFishing();
+      case 'planter':
+        return this.tendPlanter(t.planter);
       case 'pantry':
         if (this.phase !== 'service') return this.toast('The pantry opens when dinner service starts.');
         if (this.hands && ingredient(this.hands)) {
@@ -920,6 +983,7 @@ export class Game {
   // ------------------------------------------------------------ talking
 
   private talk(npc: Npc) {
+    if (npc.def.seller) return this.openSeller(npc, SECRET_SELLERS[npc.def.seller]);
     const lines = npc.def.lines;
     let page = 0;
     const dx = this.x - npc.x;
@@ -996,6 +1060,82 @@ export class Game {
       rows: () => (this.crateFor ? this.crateRows(this.crateFor) : this.stallRows(id)),
     };
     this.modal = m;
+  }
+
+  /** A hidden seller: everything prime, market price, small stock. Some want a favour first. */
+  private openSeller(npc: Npc, seller: SecretSeller) {
+    const dx = this.x - npc.x;
+    const dy = this.y - npc.y;
+    npc.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
+    if (seller.favour && !this.favours.has(seller.id)) {
+      const f = seller.favour;
+      this.modal = {
+        kind: 'talk',
+        title: npc.def.name,
+        speaker: npc.def.name,
+        look: npc.def.look,
+        subtitle: () => '',
+        line: () => f.ask,
+        index: 0,
+        rows: () => [
+          this.count(f.item)
+            ? { label: `Give ${npc.def.name} a ${nameOf(f.item).toLowerCase()}`, enabled: true, action: () => {
+              this.add(f.item, -1);
+              this.favours.add(seller.id);
+              sfx('ding');
+              this.openSeller(npc, seller);
+              this.shopLine = f.thanks;
+            } }
+            : { label: `You have no ${nameOf(f.item).toLowerCase()} yet`, enabled: false },
+          { label: "I'll be back", enabled: true, action: () => this.cancel() },
+        ],
+      };
+      sfx('pick');
+      return;
+    }
+    this.shopLine = seller.greeting;
+    this.crateFor = null;
+    const left = (id: string) => this.sellerStock.get(`${seller.id}:${id}`) ?? seller.items.find((i) => i.id === id)!.stock;
+    this.modal = {
+      kind: 'shop',
+      title: seller.name,
+      speaker: seller.merchant,
+      look: npc.def.look,
+      line: () => this.shopLine,
+      subtitle: () => `Purse ${this.money}g   Basket ${this.basketCount()}/${BASKET_SIZE}`,
+      index: 0,
+      rows: () => [
+        ...seller.items.map(({ id }) => {
+          const ing = ingredient(id)!;
+          const n = left(id);
+          return {
+            label: `${ing.name}  ${ing.price}g  prime`,
+            detail: n ? `${n} left` : 'sold out',
+            icon: id,
+            grade: 3,
+            enabled: n > 0,
+            action: () => {
+              if (this.basketCount() >= BASKET_SIZE) {
+                this.shopLine = 'Your basket is full, chef.';
+                return sfx('nope');
+              }
+              if (this.money < ing.price) {
+                this.shopLine = `That one is ${ing.price}g. Come back when your purse is heavier.`;
+                return sfx('nope');
+              }
+              this.money -= ing.price;
+              this.spent += ing.price;
+              this.add(id, 1, 3);
+              this.sellerStock.set(`${seller.id}:${id}`, n - 1);
+              this.shopLine = pick(['The best you will find in Marseille.', 'Treat it well, chef.', 'Merci. Not a word to the stallholders, eh?']);
+              sfx('coin');
+            },
+          };
+        }),
+        { label: 'Say goodbye', enabled: true, action: () => this.cancel() },
+      ],
+    };
+    sfx('pick');
   }
 
   private stallRows(id: StallId): MenuRow[] {
@@ -1178,6 +1318,78 @@ export class Game {
 
   canCook(r: Recipe) {
     return r.at !== 'oven' || this.owned.has('oven');
+  }
+
+  // ------------------------------------------------------------ catch and grow your own
+
+  /** Where the float sits on the bar right now, 0..1. */
+  floatPos() {
+    const f = this.fishing;
+    return Math.min(1, Math.max(0, 0.5 + 0.42 * Math.sin(f.t * f.speed) + 0.06 * Math.sin(f.t * f.speed * 2.7 + 1)));
+  }
+
+  private cast() {
+    const f = this.fishing;
+    f.t = rand() * 6;
+    f.speed = 1.6 + rand() * 1.4;
+    f.zone = 0.2 + rand() * 0.6;
+    f.result = null;
+    this.clock = Math.min(17 * 60 + 55, this.clock + 20);
+    sfx('toss');
+  }
+
+  private openFishing() {
+    if (this.phase !== 'afternoon') return this.toast('No fishing during service, chef.');
+    const f = this.fishing;
+    if (!f.castsLeft) return this.toast('The fish have stopped biting today. Try again tomorrow.');
+    this.cast();
+    this.modal = {
+      kind: 'fish',
+      title: 'Fishing off the lido',
+      subtitle: () => (f.result === null
+        ? 'Reel in while the float is over the gold for the best catch.'
+        : f.result === 3 ? 'A beauty! Clear eyes, bright gills. Prime rockfish.'
+          : f.result === 2 ? 'A decent rockfish. Into the ice box it goes.'
+            : f.result === 1 ? 'A scrawny one, but it counts.'
+              : 'It got away.'),
+      index: 0,
+      rows: () => (f.result === null
+        ? [{ label: 'Reel in!', enabled: true, action: () => this.reel() }]
+        : [
+          f.castsLeft ? { label: `Cast again (${f.castsLeft} left)`, enabled: true, action: () => this.cast() } : { label: 'The fish have stopped biting', heading: true },
+          { label: 'Put the rod away', enabled: true, action: () => this.cancel() },
+        ]),
+    };
+  }
+
+  private reel() {
+    const f = this.fishing;
+    const d = Math.abs(this.floatPos() - f.zone);
+    f.result = d < 0.05 ? 3 : d < 0.12 ? 2 : d < 0.18 ? 1 : 0;
+    f.castsLeft--;
+    if (f.result) {
+      this.add('fish', 1, f.result);
+      sfx(f.result === 3 ? 'ding' : 'coin');
+    } else sfx('nope');
+    this.modal!.index = 0;
+  }
+
+  private tendPlanter(p: Planter) {
+    if (this.phase !== 'afternoon') return this.toast('The garden can wait until tomorrow afternoon.');
+    if (this.ripe(p)) {
+      p.harvestedDay = this.day;
+      this.add(p.crop, 1, 3);
+      this.add(p.crop, 1, 3);
+      this.toast(`Picked two prime ${nameOf(p.crop).toLowerCase()} for the pantry.`);
+      sfx('ding');
+      return;
+    }
+    if (p.harvestedDay === this.day) return this.toast('Already picked today. Water it again tomorrow.');
+    if (p.wateredDay === this.day) return this.toast(`Give it about an hour in the sun.`);
+    p.wateredDay = this.day;
+    p.wateredAt = this.clock;
+    this.toast(`Watered the ${nameOf(p.crop).toLowerCase()}. It will be ready in about an hour.`);
+    sfx('place');
   }
 
   private openCatalog() {

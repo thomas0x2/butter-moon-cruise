@@ -7,11 +7,12 @@
 //          W menu chalkboard   X pass window   v oven (once bought)   z slop pot
 // Rooms    T table   h chair   L sun lounger   o life ring   J bar counter   i bar stool   u funnel
 //          Q reception desk   f potted palm   K b bed (head, foot)   j writing desk
+//          ! fishing rod stand   % garden planter
 // Market   n bollard   G gangway   A P E Y market stalls   x barrel   t plane tree   H I house front
 
 export type Floor = 'sea' | 'deck' | 'galley' | 'dining' | 'pool' | 'cobble' | 'roof' | 'marble' | 'cabin' | 'stairs';
 
-export type MapId = 'market' | 'lobby' | 'galley' | 'restaurant' | 'lido' | 'cabin';
+export type MapId = 'market' | 'lobby' | 'galley' | 'restaurant' | 'lido' | 'cabin' | 'alley';
 
 export interface Door {
   x: number;
@@ -81,7 +82,9 @@ function marketRows(): string[] {
     rows.push(r);
   }
   let houses = 'H'.repeat(W);
-  for (const x of [4, 11, 17, 24, 30]) houses = set(houses, x, 'I');
+  for (const x of [4, 11, 17, 24]) houses = set(houses, x, 'I');
+  // the one open door: up the steps into Le Panier
+  houses = set(houses, 30, 'D');
   rows.push(houses);
   rows.push('R'.repeat(W));
   rows.push('R'.repeat(W));
@@ -93,11 +96,35 @@ export const MARKET = make({
   name: 'Vieux-Port market, Marseille',
   rows: marketRows(),
   outside: 'sea',
-  walkable: new Set(['q']),
+  walkable: new Set(['q', 'D']),
   strollOn: 'q',
   wall: { face: '#e8b86a', top: '#c4643a', trim: '#a5733f' },
   floorOf: (_tx, _ty, c) => (c === 'R' || c === 'H' || c === 'I' ? 'roof' : 'cobble'),
-  doors: [],
+  doors: [{ x: 30, y: 13, to: 'alley', sx: 11.5, sy: 9.3, dir: 'up' }],
+});
+
+export const ALLEY = make({
+  id: 'alley',
+  name: 'Le Panier, the old quarter',
+  rows: [
+    '###w####w#####w####w####',
+    '#qqqqqqqqqqqqqqqqqqqqqq#',
+    '#qPPqqqqqqqqqqqqqqxxqqq#',
+    '#qqqqqqqqqtqqqqqqqqqqqq#',
+    '#qqqqqqqqqqqqqqqqqqqqqq#',
+    '#qqqqqxqqqqqqqqqqqnqqqq#',
+    '#qqqqqqqqqqqqqqqqqqqqqq#',
+    '#qtqqqqqqqqqqqqqqqqqqtq#',
+    '#qqqqqqqqqqqqqqqqqqqqqq#',
+    '#qqqqqqqqqqqqqqqqqqqqqq#',
+    '###########D############',
+  ],
+  outside: 'void',
+  walkable: new Set(['q', 'D']),
+  strollOn: 'q',
+  wall: { face: '#e8b86a', top: '#c4643a', trim: '#a5733f' },
+  floorOf: () => 'cobble',
+  doors: [{ x: 11, y: 10, to: 'market', sx: 30.5, sy: 12.4, dir: 'up' }],
 });
 
 // ------------------------------------------------------------ ship rooms
@@ -234,6 +261,9 @@ function lidoRows(): string[] {
   put(10, 2, 'o');
   put(24, 2, 'o');
   put(10, 15, 'o');
+  // the chef's own corner: a rod stand by the rail and the sun-deck planters
+  put(31, 15, '!');
+  put(15, 14, '%.%.%');
   put(24, 15, 'o');
   return grid.map((r) => r.join(''));
 }
@@ -250,7 +280,7 @@ export const LIDO = make({
   doors: [{ x: 6, y: 5, to: 'lobby', sx: 10.9, sy: 1.5, dir: 'down' }],
 });
 
-export const MAPS: Record<MapId, TileMap> = { market: MARKET, lobby: LOBBY, galley: GALLEY, restaurant: RESTAURANT, lido: LIDO, cabin: CABIN };
+export const MAPS: Record<MapId, TileMap> = { market: MARKET, alley: ALLEY, lobby: LOBBY, galley: GALLEY, restaurant: RESTAURANT, lido: LIDO, cabin: CABIN };
 
 // ------------------------------------------------------------ queries
 

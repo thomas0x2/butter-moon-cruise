@@ -48,6 +48,22 @@ On touch: drag on the left half to walk, tap the right half to use, tap menu row
    upgrades), speed (how fresh plates reached guests), guests fed, and waiter skill. Then the ship docks in
    Naples, the end of the prototype leg.
 
+### Ingredient quality
+
+Every ingredient unit and plate is poor, fine or prime. Plate quality is the average of its ingredients, and it
+scales the pay and the menu part of the star rating. Better ingredients come from skill and effort, never from
+paying more:
+
+- **Crate picking:** each stall sells from a crate of mixed units at one price. Each unit shows cues (clear eyes
+  or cloudy, taut skin or soft spots, this morning's batch or yesterday's) and a subtle look on its icon.
+- **Catch and grow your own:** the rod stand on the lido gives three casts per afternoon; reel in while the
+  float is over the gold for a prime rockfish. The sun-deck planters (herbs, tomato, courgette) give two prime
+  units an hour after you water them, once a day.
+- **Hidden sellers:** the open door at the end of the market's house row leads up into Le Panier. Mathilde
+  sells prime produce from her roof garden; Raymond sells prime fish once you bring him a baguette.
+
+Freshness loss between ports is decided but not built yet, since the prototype ends on arrival in Naples.
+
 Recipes and market prices live in `src/data.ts`:
 
 | Dish | Ingredients | Machine |
@@ -70,7 +86,7 @@ Recipes and market prices live in `src/data.ts`:
 | File | What it does |
 | --- | --- |
 | `src/data.ts` | Ingredients, stalls, recipes, slop, kitchen upgrades, budget and basket size |
-| `src/map.ts` | ASCII maps: the Marseille market and the ship's rooms, joined by doors |
+| `src/map.ts` | ASCII maps: the Marseille market, Le Panier and the ship's rooms, joined by doors |
 | `src/npcs.ts` | People to talk to, merchants, and the waiter crews you can hire |
 | `src/grid.ts` | Square tile grid and the three-quarter-view block helper |
 | `src/art.ts` | All placeholder pixel art, drawn from code (people, items, floors, props, hull) |
