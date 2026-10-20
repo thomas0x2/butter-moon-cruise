@@ -3,10 +3,10 @@
 
 import { CHEF_LOOK, randomLook, type Dir, type Item, type Look } from './art';
 import {
-  BASKET_SIZE, BUDGET, BURNT, ingredient, INGREDIENTS, isSubset, machineLevel, matchRecipe, MENU_SIZE, nameOf, NEXT_PORT, recipe,
+  BASKET_SIZE, BUDGET, BURNT, GUESTS_TONIGHT, STARTER_RECIPES, ingredient, INGREDIENTS, isSubset, machineLevel, matchRecipe, MENU_SIZE, nameOf, NEXT_PORT, recipe,
   cueFor, GRADE_NAMES, isPrep, prepOf, PREP, RECIPES, rollGrade, SECRET_SELLERS, SLOP, STALLS, UPGRADES, REGULARS, type Machine, type Recipe, type SecretSeller, type StallId,
 } from './data';
-import { CABIN, charAt, doorAt, GALLEY, isSolid, LIDO, LOBBY, MAPS, MARKET, type Door, type MapId, type TileMap } from './map';
+import { ASHORE, CABIN, charAt, doorAt, GALLEY, isSolid, LIDO, MAPS, MARKET, type Door, type MapId, type TileMap } from './map';
 import { MERCHANT_LOOKS, NPCS, STAFF_OPTIONS, type NpcDef, type StaffOption } from './npcs';
 import { sfx } from './sound';
 
@@ -14,7 +14,9 @@ import { sfx } from './sound';
  * A port day: morning ashore (market, old town) until the all-aboard horn, then the ship until kitchen prep,
  * afternoon prep in the galley, evening dinner service. The clock is what limits exploring.
  */
-export type Phase = 'title' | 'market' | 'aboard' | 'prep' | 'service' | 'summary' | 'arrival';
+/** port: day one, a free day in Marseille (port, city and ship). aboard: the sea day until kitchen prep.
+ * evening: after the stars, until bed or midnight. Every day ends only in bed or at midnight. */
+export type Phase = 'title' | 'port' | 'aboard' | 'prep' | 'service' | 'summary' | 'evening' | 'arrival';
 
 export interface Station {
   kind: Machine;
@@ -64,6 +66,14 @@ export interface PassSlot {
   dish: Item | null;
   q: number;
   claimed: boolean;
+}
+
+/** A steel counter in the galley: somewhere to set one thing down. */
+export interface Counter {
+  tx: number;
+  ty: number;
+  item: Item | null;
+  q: number;
 }
 
 export interface Waiter {
@@ -118,8 +128,11 @@ export type Target =
   | { kind: 'station'; tx: number; ty: number; station: Station }
   | { kind: 'bin'; tx: number; ty: number }
   | { kind: 'pass'; tx: number; ty: number; slot: PassSlot }
+  | { kind: 'counter'; tx: number; ty: number; counter: Counter }
   | { kind: 'stall'; tx: number; ty: number; stall: StallId }
   | { kind: 'gangway'; tx: number; ty: number }
+  | { kind: 'ashore'; tx: number; ty: number }
+  | { kind: 'bed'; tx: number; ty: number }
   | { kind: 'locked'; tx: number; ty: number; text: string }
   | { kind: 'board'; tx: number; ty: number }
   | { kind: 'catalog'; tx: number; ty: number }
@@ -166,14 +179,14 @@ const STRIP_Y = [1.7, 2.5];
 const PASS_Y = 2.6;
 
 export const MARKET_OPEN = 8 * 60;
-/** the ship's horn: everyone back on board */
-export const ALL_ABOARD = 13 * 60;
+/** every day ends at midnight wherever the chef is, unless they went to bed first */
+export const LIGHTS_OUT = 24 * 60;
 /** the chef is due in the galley */
 export const PREP_START = 15 * 60;
 export const SERVICE_START = 18 * 60;
 export const SERVICE_END = 23 * 60;
 const LAST_SEATING = 22 * 60 + 15;
-const MINUTES_PER_SECOND: Partial<Record<Phase, number>> = { market: 2, aboard: 2, prep: 1, service: 1.5 };
+const MINUTES_PER_SECOND: Partial<Record<Phase, number>> = { port: 2, aboard: 2, prep: 1, service: 1.5, evening: 1 };
 const MAX_TICKETS = 6;
 
 const rand = Math.random;
@@ -224,7 +237,7 @@ export class Game {
   favours = new Set<string>();
   sellerStock = new Map<string, number>();
   fishing: Fishing = { t: 0, speed: 2, zone: 0.5, result: null, castsLeft: 3 };
-  known = new Set<string>();
+  known = new Set<string>(STARTER_RECIPES);
   menu: string[] = [];
   picks: string[] = [];
   staff: StaffOption = STAFF_OPTIONS[0];
@@ -237,6 +250,7 @@ export class Game {
   regularsTonight = new Set<string>();
   grumbles = 0;
   rating: Rating | null = null;
+  counters: Counter[] = [];
   spawnIn = 3;
   closingIn = -1;
   nextTicket = 1;
@@ -250,6 +264,7 @@ export class Game {
         const kind: Machine | null = c === 'S' ? 'stove' : c === 'C' ? 'board' : c === 'z' ? 'pot' : c === 'v' ? 'oven' : null;
         if (kind) this.stations.push({ kind, tx, ty, items: [], grades: [], recipe: null, t: 0, result: null, resultQ: 2, doneT: 0, dur: 1 });
         if (c === 'X') this.pass.push({ tx, dish: null, q: 2, claimed: false });
+        if (c === 'e') this.counters.push({ tx, ty, item: null, q: 2 });
       }
     }
     this.resetPlanters();
@@ -326,7 +341,12 @@ export class Game {
   }
 
   get roaming() {
-    return this.phase === 'market' || this.phase === 'aboard' || this.phase === 'prep' || this.phase === 'service';
+    return this.free || this.phase === 'prep' || this.phase === 'service' || this.phase === 'evening';
+  }
+
+  /** free time: the port day, or the sea day before prep */
+  get free() {
+    return this.phase === 'port' || this.phase === 'aboard';
   }
 
   blocked(x: number, y: number, r: number): boolean {
@@ -351,10 +371,10 @@ export class Game {
     this.faceX = dir === 'left' ? -1 : dir === 'right' ? 1 : 0;
     this.faceY = dir === 'up' ? -1 : dir === 'down' ? 1 : 0;
     this.roomBanner = 2.2;
-    const onShip = m !== MARKET && m.id !== 'alley';
+    const onShip = !ASHORE.has(m.id);
     const defs = NPCS.filter((n) => n.map === m.id && !(this.phase === 'service' && n.map === 'restaurant'));
     const extras: NpcDef[] = [];
-    const crowd = m.id === 'market' ? 4 : m.id === 'lido' ? 3 : m.id === 'lobby' ? 1 : 0;
+    const crowd = m.id === 'market' ? 4 : m.id === 'city' ? 4 : m.id === 'garde' ? 2 : m.id === 'lido' ? 3 : m.id === 'lobby' ? 1 : 0;
     for (let i = 0; i < crowd; i++) {
       const spot = this.freeSpot(m);
       if (spot) extras.push({ name: onShip ? 'Passenger' : 'Local', map: m.id, x: spot[0], y: spot[1], stroll: true, look: randomLook(rand), lines: [pick(onShip ? PASSENGER_LINES : LOCAL_LINES)] });
@@ -399,18 +419,48 @@ export class Game {
     this.clock = Math.max(this.clock, PREP_START);
     this.modal = null;
     this.hands = null;
-    if (this.map !== GALLEY) this.warp = { door: { x: 0, y: 0, to: 'galley', sx: 9.5, sy: 9.0, dir: 'up' }, t: 0, swapped: false };
+    if (this.map !== GALLEY) this.warp = { door: { x: 0, y: 0, to: 'galley', sx: 10.5, sy: 9.0, dir: 'up' }, t: 0, swapped: false };
     this.toast('3 pm, kitchen prep. Plan the menu at the chalkboard and prep at the cutting board.');
     sfx('bell');
   }
 
-  private board(late = false) {
-    this.phase = 'aboard';
+  /** Up the gangway; on the port day you can come and go as you like. */
+  private board() {
     this.hands = null;
     this.modal = null;
-    this.enterMap(LOBBY, 10.9, 10.3, 'up');
-    this.toast(late ? "The ship's horn! The purser hurries you up the gangway." : 'All aboard! Explore the ship until 3 pm, then the galley needs you.');
-    sfx('start');
+    this.warp = { door: { x: 0, y: 0, to: 'lobby', sx: 10.9, sy: 10.3, dir: 'up' }, t: 0, swapped: false };
+    sfx('place');
+  }
+
+  private goAshore() {
+    this.warp = { door: { x: 0, y: 0, to: 'market', sx: 26.5, sy: 5.6, dir: 'down' }, t: 0, swapped: false };
+    sfx('place');
+  }
+
+  /** Bed, or midnight. Night one the ship sails for a day at sea; night two it docks in Naples. */
+  private sleep(late = false) {
+    this.modal = null;
+    this.hands = null;
+    this.reminded.clear();
+    if (this.phase === 'evening') {
+      this.phase = 'arrival';
+      this.port = NEXT_PORT.name;
+      this.day = 3;
+      this.clock = MARKET_OPEN;
+      sfx('bell');
+      return;
+    }
+    this.day = 2;
+    this.port = 'at sea';
+    this.clock = MARKET_OPEN;
+    this.fishing.castsLeft = 3;
+    this.phase = 'aboard';
+    this.warp = { door: { x: 0, y: 0, to: 'cabin', sx: 3.5, sy: 3.4, dir: 'down' }, t: 0, swapped: false };
+    this.toast(late
+      ? 'Midnight! The purser walks you to your bunk. The ship slips out of Marseille.'
+      : 'You sleep while the ship slips out of Marseille.');
+    this.toast(`Day 2, at sea. The ship is yours until kitchen prep at 3 pm. ${GUESTS_TONIGHT} guests tonight.`);
+    sfx('bell');
   }
 
   // ------------------------------------------------------------ service lifecycle
@@ -423,7 +473,7 @@ export class Game {
     this.closingIn = -1;
     this.tickets = [];
     this.waiters = this.staff.crew.map((c, i) => ({
-      name: c.name, look: c.look, x: i ? 18.6 : 1.4, y: STRIP_Y[i % 2], homeX: i ? 18.6 : 1.4,
+      name: c.name, look: c.look, x: i ? GALLEY.w - 1.4 : 1.4, y: STRIP_Y[i % 2], homeX: i ? GALLEY.w - 1.4 : 1.4,
       dir: 'down' as Dir, anim: 0, moving: false, task: null, stage: 'off' as const, carrying: null, carryingQ: 2,
     }));
     this.toast('Doors are open. Tickets will come in at the pass.');
@@ -445,7 +495,7 @@ export class Game {
   /** Stars reward care: good plates, a varied menu, regulars' favourites. Speed barely matters. */
   rate(): Rating {
     const done = this.tickets.filter((t) => t.state === 'done');
-    const total = done.length + this.tickets.filter((t) => t.state === 'missed').length;
+    const total = Math.max(GUESTS_TONIGHT, done.length + this.tickets.filter((t) => t.state === 'missed').length);
     const real = done.filter((t) => t.served !== SLOP.id);
     const plates = done.length ? real.reduce((s, t) => s + Math.min(1, (0.45 + recipe(t.served!)!.price / 90) * this.quality(t.served!) * this.plateFactor(t.quality ?? 2)), 0) / done.length : 0;
     const variety = Math.min(1, new Set(real.map((t) => t.served)).size / MENU_SIZE);
@@ -469,7 +519,7 @@ export class Game {
     this.fishing.castsLeft = 3;
     this.favours.clear();
     this.sellerStock.clear();
-    this.known.clear();
+    this.known = new Set(STARTER_RECIPES);
     this.menu = [];
     this.picks = [];
     this.staff = STAFF_OPTIONS[0];
@@ -486,7 +536,8 @@ export class Game {
     this.reminded.clear();
     for (const s of this.stations) Object.assign(s, { items: [], grades: [], recipe: null, t: 0, result: null, resultQ: 2, doneT: 0 });
     for (const p of this.pass) Object.assign(p, { dish: null, q: 2, claimed: false });
-    this.phase = 'market';
+    for (const k of this.counters) Object.assign(k, { item: null, q: 2 });
+    this.phase = 'port';
     this.enterMap(MARKET, 13.5, 10.5, 'up');
   }
 
@@ -509,9 +560,13 @@ export class Game {
 
     const rate = MINUTES_PER_SECOND[this.phase] ?? 0;
     this.clock += dt * rate;
-    if (this.phase === 'market') {
-      this.remind(ALL_ABOARD - 30, "The ship's horn: all aboard at 1 pm!");
-      if (this.clock >= ALL_ABOARD && !this.warp) this.board(true);
+    if (this.phase === 'port') {
+      this.remind(18 * 60, `The ship sails overnight. Tomorrow at sea you cook for ${GUESTS_TONIGHT} guests, so shop today.`);
+      this.remind(LIGHTS_OUT - 60, 'An hour to midnight. Your bunk is in the cabin.');
+      if (this.clock >= LIGHTS_OUT && !this.warp) this.sleep(true);
+    } else if (this.phase === 'evening') {
+      this.remind(LIGHTS_OUT - 30, 'Half an hour to midnight. Time for bed, chef.');
+      if (this.clock >= LIGHTS_OUT && !this.warp) this.sleep(true);
     } else if (this.phase === 'aboard') {
       this.remind(PREP_START - 30, 'Half an hour until kitchen prep at 3.');
       if (this.clock >= PREP_START && !this.warp) this.startPrep();
@@ -530,7 +585,8 @@ export class Game {
       this.updateWaiters(dt);
       // the doors close at 11 but the last tables still get their food
       const waiting = this.tickets.some((t) => t.state === 'open' || t.state === 'pending' || t.state === 'taken');
-      if (this.clock >= SERVICE_END && (!waiting || this.clock >= SERVICE_END + 45)) this.endService();
+      const allSeated = this.tickets.length >= GUESTS_TONIGHT || this.clock >= LAST_SEATING;
+      if ((allSeated && !waiting) || this.clock >= SERVICE_END + 45) this.endService();
       else if (this.closingIn > 0) {
         this.closingIn -= dt;
         if (this.closingIn <= 0) this.endService();
@@ -689,7 +745,7 @@ export class Game {
   private updateTickets(dt: number) {
     this.spawnIn -= dt;
     const open = this.tickets.filter((t) => t.state === 'open' || t.state === 'pending').length;
-    if (this.spawnIn <= 0 && this.clock < LAST_SEATING && this.closingIn < 0) {
+    if (this.spawnIn <= 0 && this.tickets.length < GUESTS_TONIGHT && this.clock < LAST_SEATING && this.closingIn < 0) {
       const options = this.orderable();
       const anything = this.basketCount() > 0 || this.pass.some((p) => p.dish && !p.claimed);
       if (open < MAX_TICKETS && (options.length || anything)) {
@@ -849,7 +905,11 @@ export class Game {
           else if (c === 'G') consider({ kind: 'gangway', tx, ty });
           continue;
         }
-        if (c === 'g') consider({ kind: 'locked', tx, ty, text: `The gangway is up. Next stop: ${NEXT_PORT.name}.` });
+        if (c === 'g') {
+          if (this.phase === 'port') consider({ kind: 'ashore', tx, ty });
+          else consider({ kind: 'locked', tx, ty, text: `The gangway is up. Next stop: ${NEXT_PORT.name}.` });
+        }
+        if (this.map === CABIN && (c === 'K' || c === 'b')) consider({ kind: 'bed', tx, ty });
         if (this.map === CABIN && c === 'j') consider({ kind: 'catalog', tx, ty });
         if (this.map === LIDO && c === '!') consider({ kind: 'rod', tx, ty });
         if (this.map === LIDO && c === '%') consider({ kind: 'planter', tx, ty, planter: this.planters.find((p) => p.tx === tx && p.ty === ty)! });
@@ -858,6 +918,7 @@ export class Game {
         else if (c === 'W') consider({ kind: 'board', tx, ty });
         else if (c === 'B') consider({ kind: 'bin', tx, ty });
         else if (c === 'X') consider({ kind: 'pass', tx, ty, slot: this.pass.find((p) => p.tx === tx)! });
+        else if (c === 'e') consider({ kind: 'counter', tx, ty, counter: this.counters.find((k) => k.tx === tx && k.ty === ty)! });
         else if (c === 'S' || c === 'C' || c === 'z' || c === 'v') {
           consider({ kind: 'station', tx, ty, station: this.stations.find((s) => s.tx === tx && s.ty === ty)! });
         }
@@ -877,6 +938,10 @@ export class Game {
         return `Shop at the ${STALLS[t.stall].name}`;
       case 'gangway':
         return 'Board the Butter Moon';
+      case 'ashore':
+        return 'Go ashore';
+      case 'bed':
+        return this.phase === 'port' || this.phase === 'evening' ? 'Go to bed (ends the day)' : 'Your bunk';
       case 'locked':
         return 'Gangway';
       case 'board':
@@ -898,6 +963,11 @@ export class Game {
         return this.hands ? 'Hands full' : 'Open the pantry';
       case 'bin':
         return this.hands ? `Toss ${held}` : 'Bin';
+      case 'counter': {
+        const k = t.counter;
+        if (k.item) return this.hands ? 'Counter is taken' : `Pick up ${nameOf(k.item).toLowerCase()}`;
+        return this.hands ? `Set down ${held}` : 'Counter';
+      }
       case 'pass':
         if (t.slot.dish) return t.slot.claimed ? 'A waiter is on the way' : this.hands ? 'Pass is taken' : `Take back ${nameOf(t.slot.dish).toLowerCase()}`;
         return this.hands && recipe(this.hands) ? `Send out ${held}` : 'Pass window';
@@ -921,16 +991,13 @@ export class Game {
     if (this.modal) return this.modalSelect();
     switch (this.phase) {
       case 'title':
-        this.phase = 'market';
-        this.toast('Welcome to the Vieux-Port market! Fill your basket.');
+        this.phase = 'port';
+        this.toast(`Day 1 in Marseille. Explore the port, the city and the ship. Tomorrow's dinner at sea: ${GUESTS_TONIGHT} guests.`);
         sfx('start');
         return;
       case 'summary':
-        this.phase = 'arrival';
-        this.port = NEXT_PORT.name;
-        this.day = 2;
-        this.clock = MARKET_OPEN;
-        this.reminded.clear();
+        this.phase = 'evening';
+        this.toast('Service is over. The night is yours; your bunk is in the cabin. The day ends at midnight.');
         sfx('bell');
         return;
       case 'arrival':
@@ -945,11 +1012,16 @@ export class Game {
       case 'stall':
         return this.openStall(t.stall);
       case 'gangway':
-        return this.openGangway();
+        return this.board();
+      case 'ashore':
+        return this.goAshore();
+      case 'bed':
+        if (this.phase === 'port' || this.phase === 'evening') return this.openBed();
+        return this.toast('No napping today, chef. Dinner is at six.');
       case 'locked':
         return this.toast(t.text);
       case 'board':
-        return this.phase === 'aboard' || this.phase === 'prep' ? this.openWorkbench() : this.openMenuCard();
+        return this.free || this.phase === 'prep' ? this.openWorkbench() : this.openMenuCard();
       case 'catalog':
         return this.openCatalog();
       case 'rod':
@@ -974,12 +1046,28 @@ export class Game {
         return;
       case 'pass':
         return this.usePass(t.slot);
+      case 'counter':
+        return this.useCounter(t.counter);
       case 'station':
         if (t.station.kind === 'oven' && !this.owned.has('oven')) return this.toast('An oven would fit here. Order one from the catalog in your cabin.');
-        if ((this.phase === 'aboard' || this.phase === 'prep') && t.station.kind === 'board') return this.openPrep();
+        if ((this.free || this.phase === 'prep') && t.station.kind === 'board') return this.openPrep();
         if (this.phase !== 'service') return this.toast('The stoves are lit at 6. Prep at the cutting board in the meantime.');
         return this.useStation(t.station);
     }
+  }
+
+  private useCounter(k: Counter) {
+    if (k.item && !this.hands) {
+      this.hands = k.item;
+      this.handsQ = k.q;
+      k.item = null;
+      sfx('pick');
+    } else if (!k.item && this.hands) {
+      k.item = this.hands;
+      k.q = this.handsQ;
+      this.hands = null;
+      sfx('place');
+    } else if (k.item) this.toast('Your hands are full.');
   }
 
   cancel() {
@@ -1052,7 +1140,8 @@ export class Game {
     const dx = this.x - npc.x;
     const dy = this.y - npc.y;
     npc.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
-    const isHenri = npc.def.name === 'Henri' && this.phase === 'aboard';
+    const isHenri = npc.def.name === 'Henri' && this.free;
+    const teach = npc.def.teaches && !this.known.has(npc.def.teaches) ? npc.def.teaches : null;
     this.modal = {
       kind: 'talk',
       title: npc.def.name,
@@ -1062,14 +1151,19 @@ export class Game {
       line: () => lines[page],
       index: 0,
       rows: () => [{
-        label: page < lines.length - 1 ? 'Next' : isHenri ? 'Talk about tonight\'s crew' : 'Goodbye',
+        label: page < lines.length - 1 ? 'Next' : isHenri ? 'Talk about tonight\'s crew' : teach ? `Learn ${nameOf(teach)}` : 'Goodbye',
         enabled: true,
         action: () => {
           if (page < lines.length - 1) {
             page++;
             sfx('pick');
           } else if (isHenri) this.openStaff(npc);
-          else this.cancel();
+          else if (teach) {
+            this.known.add(teach);
+            this.cancel();
+            this.toast(`${npc.def.name} taught you ${nameOf(teach)}. It's in your recipe book.`);
+            sfx('coin');
+          } else this.cancel();
         },
       }],
     };
@@ -1284,15 +1378,17 @@ export class Game {
     sfx('pick');
   }
 
-  private openGangway() {
+  private openBed() {
     this.modal = {
       kind: 'list',
-      title: 'Board the Butter Moon?',
-      subtitle: () => `You can't come back ashore. Basket ${this.basketCount()}/${BASKET_SIZE}, ${this.money}g left.`,
+      title: 'Turn in for the night?',
+      subtitle: () => this.phase === 'evening'
+        ? `The ship docks in ${NEXT_PORT.name} in the morning.`
+        : `The ship sails overnight; you can't come back ashore. Tomorrow at sea: dinner for ${GUESTS_TONIGHT} guests. Basket ${this.basketCount()}/${BASKET_SIZE}.`,
       index: 0,
       rows: () => [
-        { label: 'Not yet, keep shopping', enabled: true, action: () => this.cancel() },
-        { label: 'All aboard', detail: this.basketCount() ? undefined : 'Your basket is empty', enabled: true, action: () => this.board() },
+        { label: 'Not yet', enabled: true, action: () => this.cancel() },
+        { label: 'Sleep until morning', detail: this.phase === 'port' && !this.basketCount() ? 'Your basket is empty!' : undefined, enabled: true, action: () => this.sleep() },
       ],
     };
   }
@@ -1349,7 +1445,7 @@ export class Game {
             },
           });
         }
-        rows.push({
+        if (this.phase !== 'port') rows.push({
           label: 'Start dinner service now',
           detail: this.menu.length ? this.menu.map(nameOf).join(', ') : 'Only slop tonight?',
           enabled: true,
@@ -1402,7 +1498,7 @@ export class Game {
   }
 
   private openFishing() {
-    if (this.phase !== 'aboard') return this.toast('No time for fishing now, chef.');
+    if (!this.free) return this.toast('No time for fishing now, chef.');
     const f = this.fishing;
     if (!f.castsLeft) return this.toast('The fish have stopped biting today. Try again tomorrow.');
     this.cast();
@@ -1438,7 +1534,7 @@ export class Game {
   }
 
   private tendPlanter(p: Planter) {
-    if (this.phase !== 'aboard') return this.toast('The garden can wait until tomorrow.');
+    if (!this.free) return this.toast('The garden can wait until tomorrow.');
     if (this.ripe(p)) {
       p.harvestedDay = this.day;
       this.add(p.crop, 1, 3);
@@ -1493,7 +1589,7 @@ export class Game {
   }
 
   private openCatalog() {
-    if (this.phase !== 'aboard') return this.toast('The chandler only takes orders in the morning.');
+    if (!this.free) return this.toast('The chandler only takes orders before prep.');
     this.modal = {
       kind: 'list',
       title: "Ship chandler's catalog",

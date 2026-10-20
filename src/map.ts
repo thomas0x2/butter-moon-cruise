@@ -9,10 +9,15 @@
 //          Q reception desk   f potted palm   K b bed (head, foot)   j writing desk
 //          ! fishing rod stand   % garden planter
 // Market   n bollard   G gangway   A P E Y market stalls   x barrel   t plane tree   H I house front
+// City     & fountain   l bench
+// Galley   e steel counter (holds one thing)   N sink
 
 export type Floor = 'sea' | 'deck' | 'galley' | 'dining' | 'pool' | 'cobble' | 'roof' | 'marble' | 'cabin' | 'stairs';
 
-export type MapId = 'market' | 'lobby' | 'galley' | 'restaurant' | 'lido' | 'cabin' | 'alley';
+export type MapId = 'market' | 'lobby' | 'galley' | 'restaurant' | 'lido' | 'cabin' | 'alley' | 'city' | 'garde';
+
+/** Maps on land, in the port city. */
+export const ASHORE = new Set<MapId>(['market', 'alley', 'city', 'garde']);
 
 export interface Door {
   x: number;
@@ -83,8 +88,9 @@ function marketRows(): string[] {
   }
   let houses = 'H'.repeat(W);
   for (const x of [4, 11, 17, 24]) houses = set(houses, x, 'I');
-  // the one open door: up the steps into Le Panier
+  // open doors: up the steps into Le Panier, and through to the Canebiere
   houses = set(houses, 30, 'D');
+  houses = set(houses, 8, 'D');
   rows.push(houses);
   rows.push('R'.repeat(W));
   rows.push('R'.repeat(W));
@@ -100,7 +106,10 @@ export const MARKET = make({
   strollOn: 'q',
   wall: { face: '#e8b86a', top: '#c4643a', trim: '#a5733f' },
   floorOf: (_tx, _ty, c) => (c === 'R' || c === 'H' || c === 'I' ? 'roof' : 'cobble'),
-  doors: [{ x: 30, y: 13, to: 'alley', sx: 11.5, sy: 9.3, dir: 'up' }],
+  doors: [
+    { x: 30, y: 13, to: 'alley', sx: 11.5, sy: 9.3, dir: 'up' },
+    { x: 8, y: 13, to: 'city', sx: 5.5, sy: 11.3, dir: 'up' },
+  ],
 });
 
 export const ALLEY = make({
@@ -125,6 +134,64 @@ export const ALLEY = make({
   wall: { face: '#e8b86a', top: '#c4643a', trim: '#a5733f' },
   floorOf: () => 'cobble',
   doors: [{ x: 11, y: 10, to: 'market', sx: 30.5, sy: 12.4, dir: 'up' }],
+});
+
+export const CITY = make({
+  id: 'city',
+  name: 'La Canebiere',
+  rows: [
+    '##############ZZ##############',
+    '#qqqqqqqqqqqqqqqqqqqqqqqqqqqq#',
+    '#qhThqhThqqqqqqqqqqqqqqqqJJJq#',
+    '#qqqqqqqqqqqqqqqqqqqqqqqqqqqq#',
+    '#qhThqhThqqqqqqqqqqqqqqqqqqqq#',
+    '#qqqqqqqqqqqqqqqqqqqqqqqqqqqq#',
+    '#qtqqqqqtqqqqqq&qqqqqqtqqqqtq#',
+    '#qqqqqqqqqqqqqqqqqqqqqqqqqqqq#',
+    '#qqqqqqqqqqqqqqqqqqqqqqqqqqqq#',
+    '#qtqqqqqtqqqqqqqqqqqqqtqqqqtq#',
+    '#qqqqqqqqqqqqqqqqqqqqqqqqqqqq#',
+    '#xqqqqqqqqqqqqqqqqqqqqqqqqqxq#',
+    '#####D########################',
+  ],
+  outside: 'void',
+  walkable: new Set(['q', 'D', 'Z']),
+  strollOn: 'q',
+  wall: { face: '#efd9a8', top: '#b8553a', trim: '#8a6a3f' },
+  floorOf: () => 'cobble',
+  doors: [
+    { x: 5, y: 12, to: 'market', sx: 8.5, sy: 12.4, dir: 'up' },
+    { x: 14, y: 0, to: 'garde', sx: 11.5, sy: 7.6, dir: 'up' },
+    { x: 15, y: 0, to: 'garde', sx: 12.5, sy: 7.6, dir: 'up' },
+  ],
+});
+
+export const GARDE = make({
+  id: 'garde',
+  name: 'Notre-Dame de la Garde',
+  rows: [
+    '~~~~~~~~~~~~~~~~~~~~~~~~',
+    '~######################~',
+    '~#qqqqqqqqqqqqqqqqqqqq#~',
+    '~#qqqqqqqqqqqqqqqqqqqq#~',
+    '~#qtqqqqqqqqqqqqqqqqtq#~',
+    '~#qqqqqqqqqqqqqqqqqqqq#~',
+    '~#qqqqqqqqqqqqqqqqqqqq#~',
+    '~#qlqlqqqqqqqqqqqqlqlq#~',
+    '~#qqqqqqqqqqqqqqqqqqqq#~',
+    '~rrrrrrrrrrZZrrrrrrrrrr~',
+    '~~~~~~~~~~~~~~~~~~~~~~~~',
+    '~~~~~~~~~~~~~~~~~~~~~~~~',
+  ],
+  outside: 'sea',
+  walkable: new Set(['q', 'Z']),
+  strollOn: 'q',
+  wall: { face: '#e9e2d0', top: '#9aa6b2', trim: '#c9a14a' },
+  floorOf: () => 'cobble',
+  doors: [
+    { x: 11, y: 9, to: 'city', sx: 14.5, sy: 1.5, dir: 'down' },
+    { x: 12, y: 9, to: 'city', sx: 15.5, sy: 1.5, dir: 'down' },
+  ],
 });
 
 // ------------------------------------------------------------ ship rooms
@@ -155,33 +222,38 @@ export const LOBBY = make({
     { x: 10, y: 0, to: 'lido', sx: 6.5, sy: 6.6, dir: 'down' },
     { x: 11, y: 0, to: 'lido', sx: 6.5, sy: 6.6, dir: 'down' },
     { x: 17, y: 0, to: 'cabin', sx: 4.5, sy: 5.4, dir: 'up' },
-    { x: 0, y: 6, to: 'galley', sx: 9.5, sy: 9.4, dir: 'up' },
+    { x: 0, y: 6, to: 'galley', sx: 10.5, sy: 9.4, dir: 'up' },
     { x: 21, y: 6, to: 'restaurant', sx: 13.5, sy: 8.4, dir: 'up' },
   ],
 });
 
+/**
+ * Laid out like a real line kitchen. Food flows one way: stores by the crew door, the cold line
+ * (boards, sink) and hot line (burners, oven) back to back on one long island, and the pass with
+ * its heat lamps facing the cooks across a narrow aisle. Steel counters along the way hold one thing each.
+ */
 export const GALLEY = make({
   id: 'galley',
   name: 'Galley',
   rows: [
-    '####################',
-    '#,,,,,,,,,,,,,,,,,,#',
-    '#,,,,,,,,,,,,,,,,,,#',
-    '#######XXXX#########',
-    '#FMUkkkkkkkkSSkCCkW#',
-    '#Vkkkkkkkkkkkkkkkkk#',
-    '#Okkkkkkkkkkkkkkkkk#',
-    '#BkkkkkkkSSkkvkkkzk#',
-    '#kkkkkkkkkkkkkkkkkk#',
-    '#kkkkkkkkkkkkkkkkkk#',
-    '#########D##########',
+    '######################',
+    '#,,,,,,,,,,,,,,,,,,,,#',
+    '#,,,,,,,,,,,,,,,,,,,,#',
+    '######eXXXXe##########',
+    '#kkkkkkkkkkkkkkkkkkkW#',
+    '#kkkkkkkkkkkkkkkkkkkk#',
+    '#keSSSSevzeCCeNekkkkk#',
+    '#kkkkkkkkkkkkkkkkkkkk#',
+    '#kkkkkkkkkkkkkkkkkkkk#',
+    '#BkkkkkkeekkkkkkFMUVO#',
+    '##########D###########',
   ],
   outside: 'void',
   walkable: new Set(['k', 'D']),
   strollOn: ',',
   wall: { face: '#c9d3dc', top: '#8f9aa6', trim: '#5b6672' },
   floorOf: (_tx, _ty, c) => (c === ',' ? 'dining' : 'galley'),
-  doors: [{ x: 9, y: 10, to: 'lobby', sx: 1.5, sy: 6.5, dir: 'right' }],
+  doors: [{ x: 10, y: 10, to: 'lobby', sx: 1.5, sy: 6.5, dir: 'right' }],
 });
 
 export const RESTAURANT = make({
@@ -280,7 +352,7 @@ export const LIDO = make({
   doors: [{ x: 6, y: 5, to: 'lobby', sx: 10.9, sy: 1.5, dir: 'down' }],
 });
 
-export const MAPS: Record<MapId, TileMap> = { market: MARKET, alley: ALLEY, lobby: LOBBY, galley: GALLEY, restaurant: RESTAURANT, lido: LIDO, cabin: CABIN };
+export const MAPS: Record<MapId, TileMap> = { market: MARKET, alley: ALLEY, city: CITY, garde: GARDE, lobby: LOBBY, galley: GALLEY, restaurant: RESTAURANT, lido: LIDO, cabin: CABIN };
 
 // ------------------------------------------------------------ queries
 

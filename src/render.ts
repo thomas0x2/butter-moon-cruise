@@ -1,8 +1,8 @@
 // Draws the world to a low-res canvas, then the HUD on top at screen resolution.
 
 import { floorSprite, hullStrip, icon, personSprite, propSprite, type Look, type Dir, type Item } from './art';
-import { BASKET_SIZE, BUDGET, GRADE_NAMES, INGREDIENTS, MENU_SIZE, NEXT_PORT, SLOP, STALLS, nameOf, recipe, type StallId } from './data';
-import { ALL_ABOARD, PREP_START, SERVICE_END, SERVICE_START, type Game, type MenuRow, type Modal, type Planter, type Target, type Ticket } from './game';
+import { BASKET_SIZE, BUDGET, GRADE_NAMES, GUESTS_TONIGHT, INGREDIENTS, MENU_SIZE, NEXT_PORT, SLOP, STALLS, nameOf, recipe, type StallId } from './data';
+import { LIGHTS_OUT, PREP_START, SERVICE_END, SERVICE_START, type Game, type MenuRow, type Modal, type Planter, type Target, type Ticket } from './game';
 import { drawBlock, hash2, TILE, tileCenter, toScreen, toWorld } from './grid';
 import { charAt, floorAt, isDoor, isLand, isWall, type TileMap } from './map';
 
@@ -200,6 +200,13 @@ export function renderWorld(game: Game, g: CanvasRenderingContext2D, W: number, 
           }
         },
       });
+    }
+    // whatever is set down on the counters
+    for (const k of game.counters) {
+      if (!k.item) continue;
+      const c = tileCenter(k.tx, k.ty);
+      const item = k.item;
+      list.push({ depth: k.ty + 1.02, draw: () => g.drawImage(icon(item), c.x + ox - 4, c.y + oy - 17) });
     }
     // plates waiting on the pass window
     for (const slot of game.pass) {
@@ -452,7 +459,7 @@ function bar(g: CanvasRenderingContext2D, x: number, y: number, f: number, col: 
 
 const TARGET_HEIGHT: Record<string, number> = {
   F: 32, S: 22, C: 22, M: 16, U: 16, V: 18, O: 18, B: 16, W: 22, X: 30, v: 30, z: 20, j: 18,
-  A: 34, P: 34, E: 34, Y: 34, G: 30, g: 6, '!': 26, '%': 16,
+  A: 34, P: 34, E: 34, Y: 34, G: 30, g: 6, '!': 26, '%': 16, e: 22, K: 14, b: 12,
 };
 
 function drawArrow(g: CanvasRenderingContext2D, game: Game, target: Target, ox: number, oy: number, t: number) {
@@ -558,7 +565,7 @@ function gradeMarks(c: CanvasRenderingContext2D, x: number, y: number, size: num
 }
 
 function deadlineOf(game: Game): number {
-  return game.phase === 'market' ? ALL_ABOARD : game.phase === 'aboard' ? PREP_START : game.phase === 'prep' ? SERVICE_START : SERVICE_END;
+  return game.phase === 'aboard' ? PREP_START : game.phase === 'prep' ? SERVICE_START : game.phase === 'service' ? SERVICE_END : LIGHTS_OUT;
 }
 
 function clockText(min: number): string {
@@ -615,7 +622,7 @@ export interface HudLayout {
 
 const PAD = 6;
 const CLOCK_W = 104;
-const TALLY_W = 84;
+const TALLY_W = 104;
 const TALLY_H = 38;
 const SLOT = 22;
 const TICKET_W = 26;
@@ -633,7 +640,7 @@ export function hudLayout(game: Game, W: number): HudLayout {
   const cardCols = narrow ? 5 : 6;
   let cardH = 0;
   let cardW = 10 + cardCols * 22;
-  if (game.phase === 'market' || game.phase === 'aboard' || game.phase === 'prep') {
+  if (game.phase === 'port' || game.phase === 'aboard' || game.phase === 'prep') {
     const kinds = game.stock.size;
     cardH = 16 + Math.max(1, Math.ceil(kinds / cardCols)) * 14;
   } else if (service) {
@@ -667,11 +674,11 @@ export function renderHud(game: Game, c: CanvasRenderingContext2D, view: View, u
   if (game.phase === 'title') {
     return overlay(c, CW, CH, u, 'Butter Moon Cruise', [
       'You are the chef aboard the MS Butter Moon, docked in Marseille.',
-      `Budget ${BUDGET}g, basket space ${BASKET_SIZE}. Every day has three parts, and the clock limits how much you can explore.`,
-      'Morning and noon: shop the market and explore the port. The ship sails at 1 pm, then you have until 3 to roam the ship: talk to people, hire waiters from Henri, order machines from your cabin catalog, fish, garden, and taste combinations at the galley chalkboard.',
-      'Afternoon, 3 to 6 pm: kitchen prep. Chop and portion tonight\'s dishes at the cutting board. Evening: dinner service. Waiters bring tickets in; put finished plates on the pass. Nobody is in a hurry: guests wait, and the stars reward good plates, variety and the regulars\' favourites.',
+      `Day 1 is a free day in port. Shop the Vieux-Port market (${BUDGET}g, basket space ${BASKET_SIZE}), explore the city, or come aboard and roam the ship. Tomorrow at sea you cook dinner for ${GUESTS_TONIGHT} guests, and there is no market at sea, so shop for them today.`,
+      'Day 2 at sea: free time on the ship until 3 pm, kitchen prep until 6, then dinner service. Waiters bring tickets in; put finished plates on the pass. Guests wait, and the stars reward good plates, variety and the regulars\' favourites.',
+      'A day ends only when you go to bed in your cabin, or at midnight wherever you are.',
+      'Your recipe book starts with three basics. Taste combinations at the galley chalkboard, and listen to the locals, to learn more.',
       'Better ingredients make better plates. Pick the best from each crate, fish off the lido, water the sun-deck garden, and explore the old town for sellers the market never sees.',
-      'Tomorrow: Naples.',
       '',
       'Move: WASD or arrows   Use: E or Space   Back: Esc   Recipe book: N   Mute: M',
       'Touch: drag on the left half to walk, tap the right half to use.',
@@ -704,13 +711,15 @@ export function renderHud(game: Game, c: CanvasRenderingContext2D, view: View, u
   // phase panel, top right (under the clock on narrow screens)
   const tw = TALLY_W * u;
   const tally =
-    game.phase === 'market' ? `Basket ${game.basketCount()}/${BASKET_SIZE}`
-    : game.phase === 'aboard' || game.phase === 'prep' ? `Menu ${game.menu.length}/${MENU_SIZE}`
-    : `Served ${game.served}  Waiting ${game.tickets.filter((t) => t.state === 'open' || t.state === 'pending').length}`;
+    game.phase === 'port' ? `Basket ${game.basketCount()}/${BASKET_SIZE}  Guests ${GUESTS_TONIGHT}`
+    : game.phase === 'aboard' || game.phase === 'prep' ? `Menu ${game.menu.length}/${MENU_SIZE}  Guests ${GUESTS_TONIGHT}`
+    : game.phase === 'evening' ? `Served ${game.served}/${GUESTS_TONIGHT}`
+    : `Served ${game.served}/${GUESTS_TONIGHT}  Waiting ${game.tickets.filter((t) => t.state === 'open' || t.state === 'pending').length}`;
   const tx = hud.narrow ? pad : CW - pad - tw;
   const ty = hud.narrow ? pad + 38 * u : pad;
   const deadline =
-    game.phase === 'market' ? 'All aboard by 1 pm'
+    game.phase === 'port' ? 'Dinner at sea tomorrow'
+    : game.phase === 'evening' ? 'Bed by midnight'
     : game.phase === 'aboard' ? 'Kitchen prep at 3 pm'
     : game.phase === 'prep' ? 'Dinner service at 6 pm'
     : game.clock > SERVICE_END - 45 ? 'Last orders!' : 'Dinner service';
@@ -724,7 +733,7 @@ export function renderHud(game: Game, c: CanvasRenderingContext2D, view: View, u
   if (game.phase === 'service') drawTicketRail(game, c, u, CW, hud);
 
   // bottom-left card: basket at the market, pantry aboard and in prep, the menu during service
-  if (game.phase === 'market' || game.phase === 'aboard' || game.phase === 'prep') drawBasket(game, c, u, pad, CH, hud);
+  if (game.phase === 'port' || game.phase === 'aboard' || game.phase === 'prep') drawBasket(game, c, u, pad, CH, hud);
   else if (game.phase === 'service') drawMenuCard(game, c, u, pad, CH, hud);
 
   // hands slot
@@ -803,7 +812,7 @@ export function renderHud(game: Game, c: CanvasRenderingContext2D, view: View, u
 
   if (game.phase === 'summary') drawSummary(game, c, u, CW, CH);
   if (game.phase === 'arrival') {
-    overlay(c, CW, CH, u, `Day 2  ${NEXT_PORT.name}`, [
+    overlay(c, CW, CH, u, `Day ${game.day}  ${NEXT_PORT.name}`, [
       `${NEXT_PORT.greeting} The MS Butter Moon has docked in ${NEXT_PORT.name}.`,
       `Tonight's local star: ${NEXT_PORT.dish}.`,
       `You arrive with ${game.money}g in your purse and ${game.known.size} recipes in your book.`,
@@ -881,7 +890,7 @@ function drawBasket(game: Game, c: CanvasRenderingContext2D, u: number, pad: num
   const h = hud.cardH * u;
   const y0 = CH - pad - h;
   panel(c, pad, y0, w, h, u);
-  text(c, game.phase === 'market' ? 'Basket' : 'Pantry', pad + 5 * u, y0 + 4 * u, u, 5, '#e8cf7a');
+  text(c, game.phase === 'port' ? 'Basket' : 'Pantry', pad + 5 * u, y0 + 4 * u, u, 5, '#e8cf7a');
   if (!items.length) text(c, 'empty', pad + 5 * u, y0 + 16 * u, u, 5, '#9aa6b2');
   items.forEach((ing, i) => {
     const x = pad + (5 + (i % cols) * 22) * u;

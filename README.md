@@ -23,41 +23,37 @@ The build uses relative paths, so `dist/` can be wrapped as a desktop app as-is.
 WASD / arrows to move, E or Space to use or talk, Esc to back out of a menu, N for the recipe book, M to mute.
 On touch: drag on the left half to walk, tap the right half to use, tap menu rows to pick them.
 
-## How it plays (one leg: Marseille to Naples)
+## How it plays (one leg: Marseille, a day at sea, Naples)
 
-Every day has three parts, and the clock limits how much you can explore. A reminder sounds half an hour
-before each deadline; when the time comes, the game moves you on.
+A day ends only when you go to bed in your cabin, or at midnight wherever you are.
 
-1. **Morning and noon ashore (8 am to 1 pm).** Walk the Vieux-Port quay and shop at four stalls. Each stall
-   opens a shop screen: the merchant in the middle, the wares on the right, the merchant talking along the
-   bottom. You have 120g and room for 15 ingredients, and can hand things back for a refund. Board at the
-   gangway whenever you like; at 1 pm the ship's horn calls everyone aboard.
-2. **Free time aboard (until 3 pm).** The ship is a set of rooms joined by doors, Pokemon-style: the grand
-   atrium, the galley, the restaurant, the lido deck (stairs from the atrium) and the chef's cabin. Walk around
-   and talk to passengers and crew; many drop recipe hints, and the regulars tell you their favourite dish.
-   - **Waiters:** Henri, the maitre d' in the restaurant, lets you hire tonight's crew (free deckhands,
-     25g seasoned waiters or a 50g A-team). Better waiters walk faster and raise the rating.
-   - **Kitchen upgrades:** the catalog on your cabin desk sells machines. The bakery oven (40g) unlocks the
-     oven dishes; copper stove tops, Japanese knives and a convection fan make their machine faster and its
-     plates better.
-   - **Recipe book (N):** starts empty. At the galley chalkboard, tick 2 or 3 pantry ingredients and taste
-     them. A real combination goes in the book.
-3. **Afternoon kitchen prep (3 pm to 6 pm).** You stay in the galley. Put up to 3 discovered dishes on
-   tonight's menu at the chalkboard, and do mise en place at the cutting board: each prep tray holds
-   everything for one plate, chopped and portioned, and cooks faster tonight. Each tray takes 15 minutes, so
-   the afternoon only fits so many. You can start service early from the chalkboard.
-4. **Evening dinner service (6 pm until the last table).** The chef stays in the galley. Waiters bring
-   tickets to the pass (shown on the rail at the top). Take a prep tray or raw ingredients from the pantry,
-   cook on the stoves, board or oven, and put finished plates on the pass window; a waiter carries each one
-   to its table. Service is calm: guests wait as long as it takes, and the night ends once the last table is
-   served. Regulars (pink corner on their ticket) order their favourite and pay half again if they get it.
-   **Mystery slop**: any one ingredient in the slop pot answers any ticket, for 5g and an unhappy guest.
-5. **Rating.** Every service ends with 1 to 5 stars in half steps, scored on care rather than speed: plate
-   quality, menu variety, regulars' favourites served, guests fed, then a little for speed and waiters.
-   Then the ship docks in Naples, the end of the prototype leg.
+1. **Day 1: a free day in Marseille.** Come and go between the port, the city and the ship as you like
+   (gangway on the quay, hatch in the atrium).
+   - **Vieux-Port market:** four stalls, each with a shop screen (merchant in the middle, wares on the right,
+     their words along the bottom). 160g and room for 30 ingredients. There is no market at sea, so shop
+     here for tomorrow's dinner: the panel top right always shows the guest count (12).
+   - **The city:** Le Panier (hidden sellers) and La Canebiere through the open house doors, and the steps
+     up to the Notre-Dame de la Garde lookout. Some locals teach you a recipe: Cesaire at his cafe (soupe a
+     l'oignon) and Meme Rose by the fountain (ratatouille).
+   - **The ship:** grand atrium, galley, restaurant, lido deck and your cabin. Hire waiters from Henri, order
+     machines from the cabin catalog, fish off the lido, water the garden, taste combinations at the
+     chalkboard. Go to bed to end the day early; the ship sails overnight.
+2. **Day 2: at sea.** Free time aboard until 3 pm. Then kitchen prep until 6: you stay in the galley, set up
+   to 3 dishes as tonight's menu at the chalkboard and prep trays at the cutting boards (15 minutes each).
+3. **Dinner service (from 6 pm).** The chef stays in the galley. Waiters bring tickets to the pass; take
+   ingredients or prep trays from the stores, cook on the hot line, and put plates on the pass window. The
+   steel counters hold one thing each, so you can set things down. Twelve guests come in; they wait as long
+   as it takes, and the night ends once the last one is fed. Regulars (pink corner) order their favourite and
+   pay half again for it. **Mystery slop**: any one ingredient in the slop pot answers any ticket, unhappily.
+4. **Rating.** 1 to 5 stars in half steps, scored on care: plate quality, menu variety, regulars'
+   favourites, guests fed, a little for speed and waiters. Then the evening is yours until bed or
+   midnight, and you wake up in Naples, the end of the prototype leg.
 
-Planned later: multi-day sea stretches (explore the ship, build relationships with crew and guests) and
-multi-day port stops with no dinner service, so you can explore the city.
+The recipe book starts with three basics (omelette aux herbes, salade provencale, moules marinieres).
+
+**The galley** is laid out like a real line kitchen: stores (walk-in fridge, ice, sacks, crates) by the crew
+door, one long island with the hot line (four burners, oven slot, slop pot) back to back with the cold line
+(two cutting boards, sink), and the pass with its heat lamps across a narrow aisle.
 
 ### Ingredient quality
 
@@ -101,7 +97,7 @@ Recipes and market prices live in `src/data.ts`:
 | `src/npcs.ts` | People to talk to, merchants, and the waiter crews you can hire |
 | `src/grid.ts` | Square tile grid and the three-quarter-view block helper |
 | `src/art.ts` | All placeholder pixel art, drawn from code (people, items, floors, props, hull) |
-| `src/game.ts` | Rules and phases: market, aboard, prep, service, rating, arrival; doors, tickets, waiters, modals |
+| `src/game.ts` | Rules and phases: port day, aboard, prep, service, evening, arrival; doors, tickets, waiters, modals |
 | `src/render.ts` | Row-sorted world render, rooms and walls, HUD, shop and dialogue screens, star summary |
 | `src/sound.ts` | WebAudio blips |
 | `src/main.ts` | Canvas scaling, keyboard/touch input, game loop |

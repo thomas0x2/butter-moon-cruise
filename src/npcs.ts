@@ -16,6 +16,8 @@ export interface NpcDef {
   facing?: 'up' | 'down' | 'left' | 'right';
   /** a hidden seller: talking opens their wares */
   seller?: string;
+  /** a recipe id they teach you at the end of the chat */
+  teaches?: string;
 }
 
 const WAITER = { w: '#2b2b3a', g: '#1d1d2b', r: '#ffffff', b: '#1d1d2b' };
@@ -30,7 +32,21 @@ export const NPCS: NpcDef[] = [
   { name: 'Fanny', map: 'market', x: 13.5, y: 6.5, stroll: true, look: makeLook('bun', { w: '#3fb6c9', g: '#2a8899', h: '#a8461f' }),
     lines: ['Bonjour, chef! Buying for the big ship?', 'Bouillabaisse needs good rockfish, a ripe tomato and real saffron. Do not skimp on the saffron.'] },
   { name: 'Marius', map: 'market', x: 23.5, y: 10.5, stroll: true, look: makeLook('short', { w: '#e9e4d4', g: '#c8b38a', h: '#b5b5b5' }),
-    lines: ['Forty years I have fished this harbour.', 'Mussels and garlic, a splash of the good stuff... that is supper.', 'Want the real thing? The open door at the end of the row goes up into Le Panier. The old-timers sell there.'] },
+    lines: ['Forty years I have fished this harbour.', 'Mussels and garlic, a splash of the good stuff... that is supper.', 'Want the real thing? The open door at the end of the row goes up into Le Panier. The old-timers sell there.', 'The other open door goes through to the Canebiere, our grand boulevard. Climb the steps at the top to see the Bonne Mere.'] },
+
+  // La Canebiere, the boulevard behind the port
+  { name: 'Cesaire', map: 'city', x: 24.4, y: 2.5, facing: 'right', teaches: 'onionsoup', look: makeLook('short', { w: '#ffffff', g: '#2b2b3a', r: '#2b2b3a', h: '#2b1b10', s: '#f1c27d', S: '#d9a066' }),
+    lines: ['Bienvenue au Cafe Cesaire! A chef from the big ship, eh?', 'My grandfather served soupe a l\'oignon to the dockers every winter morning.', 'Onions cooked slow until they are brown and sweet, a slice of old bread on top, then a heap of Comte under the grill. Here, write it down.'] },
+  { name: 'Meme Rose', map: 'city', x: 16.5, y: 7.5, facing: 'down', teaches: 'ratatouille', look: makeLook('sunhat', { w: '#6a8fd0', g: '#4a6aa8', h: '#e9e4d4', s: '#ffdbac', S: '#e8b98a' }),
+    lines: ['Sit with me by the fountain, chef. My knees are older than this city.', 'Ratatouille is not a stew of whatever, whatever they tell you. Tomato, courgette, and the herbs of the hills.', 'Each one cooked on its own, then together. Patience! There, now you know it too.'] },
+  { name: 'Nico', map: 'city', x: 9.5, y: 9.5, stroll: true, look: makeLook('short', { w: '#e8452c', g: '#b5321f', h: '#121212', s: '#c68642', S: '#a0652d' }),
+    lines: ['Are you lost? The port is through the door at the bottom. The steps at the top go up to Notre-Dame.', 'My dad says the best fish at the market sells out by noon. And Raymond in Le Panier keeps the very best for friends.'] },
+
+  // Notre-Dame de la Garde, the lookout above the city
+  { name: 'Zoe', map: 'garde', x: 6.5, y: 5.5, facing: 'down', look: makeLook('bun', { w: '#f5c542', g: '#cc9c1f', h: '#a8461f' }),
+    lines: ['I paint this view every day and it is never the same twice.', 'See your ship down there? Tonight it sails. Tomorrow there is only sea, so whatever you cook at sea, you buy here today.'] },
+  { name: 'Pere Antoine', map: 'garde', x: 17.5, y: 4.5, stroll: true, look: makeLook('short', { w: '#2b2b3a', g: '#1d1d2b', r: '#ffffff', h: '#b5b5b5' }),
+    lines: ['The Bonne Mere has watched over the sailors of Marseille for centuries.', 'A blessing for your voyage, chef. And a secret: garlic pounded into good olive oil, spread on bread. The sailors call it aioli toast.'] },
 
   // Le Panier, the old quarter behind the market
   { name: 'Mathilde', map: 'alley', x: 3.5, y: 3.6, facing: 'down', seller: 'mathilde', look: makeLook('sunhat', { w: '#b06a8a', g: '#8a4568', h: '#b5b5b5', s: '#f1c27d', S: '#d9a066' }), lines: [] },
@@ -38,11 +54,11 @@ export const NPCS: NpcDef[] = [
 
   // Lido deck
   { name: 'Captain Margot', map: 'lido', x: 30.5, y: 6.5, facing: 'left', look: makeLook('short', { w: '#ffffff', g: '#c9d3dc', r: '#e3b54a', b: '#1c2d4a', h: '#5a3825' }),
-    lines: ['Welcome aboard, chef. We sail for Naples tonight.', 'The dining room seats up to dinner at six. My passengers judge a ship by its galley, so no pressure.'] },
+    lines: ['Welcome aboard, chef. We sail tonight, a day at sea, then Naples.', 'The dining room seats up to dinner at six. My passengers judge a ship by its galley, so no pressure.'] },
   { name: 'Mr. Okafor', map: 'lido', x: 20.5, y: 13.5, stroll: true, look: makeLook('sunhat', { w: '#ff7a59', g: '#d4573a', s: '#8d5524', S: '#6b3e18' }),
     lines: ['I came to Marseille for one thing: bouillabaisse.', 'If it is on the menu tonight, I will order two.'] },
   { name: 'Lucia', map: 'lido', x: 12.5, y: 11.5, stroll: true, look: makeLook('bun', { w: '#5fcf7a', g: '#3c9c55', h: '#121212' }),
-    lines: ['Tomorrow is Naples! I grew up two streets from the best pizzeria in the world.', 'Tonight though, I want something French. A tarte au citron, all lemon and butter. That is my favourite.'] },
+    lines: ['Soon it is Naples! I grew up two streets from the best pizzeria in the world.', 'At sea though, I want something French. A tarte au citron, all lemon and butter. That is my favourite.'] },
   { name: 'Theo', map: 'lido', x: 28.5, y: 9.5, stroll: true, look: makeLook('short', { w: '#f5c542', g: '#cc9c1f', h: '#c9a14a', s: '#ffdbac', S: '#e8b98a' }),
     lines: ['Are you the chef? Can you make croissants?', 'Flour, butter, eggs. Mum says that is all it is, but it is magic.'] },
 
@@ -54,7 +70,7 @@ export const NPCS: NpcDef[] = [
 
   // Restaurant
   { name: 'Henri', map: 'restaurant', x: 11.5, y: 7.5, facing: 'down', look: makeLook('short', { ...WAITER, r: '#c8323e', h: '#5a3825' }),
-    lines: ['I am Henri, maitre d\'. Tonight is a full house.', 'During service you stay in the galley, chef. My waiters bring the tickets to the pass and carry your plates out. Nobody here is in a hurry; take your time and cook well.', 'A tip from an old hand: chop and prepare at the cutting board this afternoon. Tonight you just cook and plate.'] },
+    lines: ['I am Henri, maitre d\'. Twelve covers booked for our first night at sea.', 'During service you stay in the galley, chef. My waiters bring the tickets to the pass and carry your plates out. Nobody here is in a hurry; take your time and cook well.', 'A tip from an old hand: chop and prepare at the cutting board this afternoon. Tonight you just cook and plate.'] },
   { name: 'Sofia', map: 'restaurant', x: 4.5, y: 5.5, stroll: true, look: WAITER_LOOKS[0],
     lines: ['Put each finished plate on the pass window. If it matches a ticket, I take it straight out.'] },
   { name: 'Kenji', map: 'restaurant', x: 17.5, y: 3.5, stroll: true, look: WAITER_LOOKS[1],

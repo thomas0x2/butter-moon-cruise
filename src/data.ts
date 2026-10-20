@@ -96,9 +96,13 @@ export function machineLevel(m: Machine, owned: Set<string>): { speed: number; q
 /** The fallback dish: any single ingredient in the slop pot. Always available, never loved. */
 export const SLOP: Recipe = { id: 'slop', name: 'Mystery slop', inputs: [], at: 'pot', time: 3, price: 5, hint: 'Throw any one ingredient in the slop pot. Guests will eat it, unhappily.' };
 
-export const BUDGET = 120;
-export const BASKET_SIZE = 15;
+export const BUDGET = 160;
+export const BASKET_SIZE = 30;
 export const MENU_SIZE = 3;
+/** Covers booked for the first dinner at sea, known from day one so the chef can shop for them. */
+export const GUESTS_TONIGHT = 12;
+/** Simple dishes every chef already knows; the rest are discovered or taught. */
+export const STARTER_RECIPES = ['omelette', 'salade', 'moules'];
 
 const NAMES = new Map<string, string>([
   ...INGREDIENTS.map((i) => [i.id, i.name] as [string, string]),

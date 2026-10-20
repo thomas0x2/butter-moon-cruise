@@ -439,6 +439,44 @@ export function propSprite(ch: string): Sprite | null {
         rect(g, '#6b3a22', x + 11, y + 13, 1, 2);
       });
       break;
+    case '&':
+      // a stone fountain with a jet of water
+      s = prop((g, x, y) => {
+        drawBlock(g, x - 2, y + 4, 20, 12, 5, { top: '#d8cdb4', front: '#b3a684', edge: '#efe6d0', base: '#7a6f55' });
+        rect(g, '#5fb4d8', x, y + 5, 16, 6);
+        rect(g, '#9fdcf2', x + 2, y + 6, 5, 1);
+        drawBlock(g, x + 6, y + 6, 4, 4, 9, { top: '#d8cdb4', front: '#b3a684', edge: '#efe6d0' });
+        rect(g, '#bfeaff', x + 7, y - 9, 2, 6);
+        rect(g, '#e8f8ff', x + 5, y - 10, 6, 1);
+      });
+      break;
+    case 'l':
+      // a park bench
+      s = prop((g, x, y) => {
+        drawBlock(g, x, y + 6, 16, 6, 4, WOOD);
+        rect(g, '#8a5a32', x, y - 3, 16, 3);
+        rect(g, '#2b3138', x + 1, y + 8, 2, 6);
+        rect(g, '#2b3138', x + 13, y + 8, 2, 6);
+      });
+      break;
+    case 'e':
+      // stainless steel counter: somewhere to set things down
+      s = prop((g, x, y) => {
+        drawBlock(g, x, y + 2, 16, 14, 11, { top: '#c4ced8', front: '#7f8c98', edge: '#e8eef3', base: '#2b3138' });
+        rect(g, '#aab5c0', x, y - 9, 16, 1);
+        rect(g, '#5b6672', x + 2, y + 9, 12, 1);
+      });
+      break;
+    case 'N':
+      // deep sink with a tap
+      s = prop((g, x, y) => {
+        drawBlock(g, x, y + 2, 16, 14, 11, { top: '#c4ced8', front: '#7f8c98', edge: '#e8eef3', base: '#2b3138' });
+        rect(g, '#5b6672', x + 2, y - 7, 12, 7);
+        rect(g, '#7fb8d0', x + 3, y - 4, 10, 3);
+        rect(g, '#9aa6b2', x + 7, y - 12, 2, 5);
+        rect(g, '#9aa6b2', x + 7, y - 12, 4, 1);
+      });
+      break;
     case 'L':
       s = prop((g, x, y) => {
         drawBlock(g, x + 1, y + 4, 14, 10, 3, { top: '#ffffff', front: '#c9d3dc' });
