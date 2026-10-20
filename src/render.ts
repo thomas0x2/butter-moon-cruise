@@ -2,7 +2,7 @@
 
 import { floorSprite, hullStrip, icon, personSprite, propSprite, type Look, type Dir, type Item } from './art';
 import { BASKET_SIZE, BUDGET, GRADE_NAMES, INGREDIENTS, MENU_SIZE, NEXT_PORT, SLOP, STALLS, nameOf, recipe, type StallId } from './data';
-import { SERVICE_END, type Game, type MenuRow, type Modal, type Planter, type Target, type Ticket } from './game';
+import { ALL_ABOARD, PREP_START, SERVICE_END, SERVICE_START, type Game, type MenuRow, type Modal, type Planter, type Target, type Ticket } from './game';
 import { drawBlock, hash2, TILE, tileCenter, toScreen, toWorld } from './grid';
 import { charAt, floorAt, isDoor, isLand, isWall, type TileMap } from './map';
 
@@ -557,6 +557,10 @@ function gradeMarks(c: CanvasRenderingContext2D, x: number, y: number, size: num
   }
 }
 
+function deadlineOf(game: Game): number {
+  return game.phase === 'market' ? ALL_ABOARD : game.phase === 'aboard' ? PREP_START : game.phase === 'prep' ? SERVICE_START : SERVICE_END;
+}
+
 function clockText(min: number): string {
   const h = Math.floor(min / 60);
   const m = Math.floor((min % 60) / 10) * 10;
@@ -612,6 +616,7 @@ export interface HudLayout {
 const PAD = 6;
 const CLOCK_W = 104;
 const TALLY_W = 84;
+const TALLY_H = 38;
 const SLOT = 22;
 const TICKET_W = 26;
 const TICKET_H = 30;
@@ -628,8 +633,8 @@ export function hudLayout(game: Game, W: number): HudLayout {
   const cardCols = narrow ? 5 : 6;
   let cardH = 0;
   let cardW = 10 + cardCols * 22;
-  if (game.phase === 'market' || game.phase === 'afternoon') {
-    const kinds = INGREDIENTS.filter((i) => game.count(i.id)).length;
+  if (game.phase === 'market' || game.phase === 'aboard' || game.phase === 'prep') {
+    const kinds = game.stock.size;
     cardH = 16 + Math.max(1, Math.ceil(kinds / cardCols)) * 14;
   } else if (service) {
     const avail = narrow ? W - PAD * 2 - SLOT - 6 : Math.min(W / 2 - SLOT / 2 - PAD - 8, MENU_ENTRY_W * 4 + 10);
@@ -640,7 +645,7 @@ export function hudLayout(game: Game, W: number): HudLayout {
   }
   const slotX = narrow ? W - PAD - SLOT : Math.max(W / 2 - SLOT / 2, PAD + cardW + 8);
   // narrow screens stack the tally under the clock and the ticket rail under both
-  const panels = narrow ? PAD + 38 + 30 : PAD + 34;
+  const panels = narrow ? PAD + 38 + TALLY_H : PAD + Math.max(34, TALLY_H);
   const railY = narrow ? panels + 4 : PAD;
   const afterRail = narrow && service ? railY + TICKET_H + 2 : panels;
   const toastY = afterRail + 3;
@@ -662,9 +667,9 @@ export function renderHud(game: Game, c: CanvasRenderingContext2D, view: View, u
   if (game.phase === 'title') {
     return overlay(c, CW, CH, u, 'Butter Moon Cruise', [
       'You are the chef aboard the MS Butter Moon, docked in Marseille.',
-      `Morning: shop the Vieux-Port market. Budget ${BUDGET}g, basket space ${BASKET_SIZE}.`,
-      'Afternoon: roam the ship and talk to people. Hire waiters from Henri in the restaurant, order machines from the catalog in your cabin, and taste combinations at the galley chalkboard to fill your recipe book.',
-      'Evening: cook in the galley. Waiters bring tickets in; put finished plates on the pass. Then the guests give you stars.',
+      `Budget ${BUDGET}g, basket space ${BASKET_SIZE}. Every day has three parts, and the clock limits how much you can explore.`,
+      'Morning and noon: shop the market and explore the port. The ship sails at 1 pm, then you have until 3 to roam the ship: talk to people, hire waiters from Henri, order machines from your cabin catalog, fish, garden, and taste combinations at the galley chalkboard.',
+      'Afternoon, 3 to 6 pm: kitchen prep. Chop and portion tonight\'s dishes at the cutting board. Evening: dinner service. Waiters bring tickets in; put finished plates on the pass. Nobody is in a hurry: guests wait, and the stars reward good plates, variety and the regulars\' favourites.',
       'Better ingredients make better plates. Pick the best from each crate, fish off the lido, water the sun-deck garden, and explore the old town for sellers the market never sees.',
       'Tomorrow: Naples.',
       '',
@@ -700,20 +705,26 @@ export function renderHud(game: Game, c: CanvasRenderingContext2D, view: View, u
   const tw = TALLY_W * u;
   const tally =
     game.phase === 'market' ? `Basket ${game.basketCount()}/${BASKET_SIZE}`
-    : game.phase === 'afternoon' ? `Menu ${game.menu.length}/${MENU_SIZE}`
-    : `Served ${game.served}  Left ${game.missed}`;
+    : game.phase === 'aboard' || game.phase === 'prep' ? `Menu ${game.menu.length}/${MENU_SIZE}`
+    : `Served ${game.served}  Waiting ${game.tickets.filter((t) => t.state === 'open' || t.state === 'pending').length}`;
   const tx = hud.narrow ? pad : CW - pad - tw;
   const ty = hud.narrow ? pad + 38 * u : pad;
-  panel(c, tx, ty, tw, 30 * u, u);
-  text(c, tally, tx + tw / 2, ty + 5 * u, u, 6, '#ffffff', 'center');
-  if (game.phase === 'service' && game.clock > SERVICE_END - 45) text(c, 'Last orders!', tx + tw / 2, ty + 17 * u, u, 6, '#ffb340', 'center');
-  else text(c, 'N  Recipe book', tx + tw / 2, ty + 17 * u, u, 5, '#e8cf7a', 'center');
-  if (game.roaming) Object.assign(bookHit, { x: tx, y: ty, w: tw, h: 30 * u });
+  const deadline =
+    game.phase === 'market' ? 'All aboard by 1 pm'
+    : game.phase === 'aboard' ? 'Kitchen prep at 3 pm'
+    : game.phase === 'prep' ? 'Dinner service at 6 pm'
+    : game.clock > SERVICE_END - 45 ? 'Last orders!' : 'Dinner service';
+  const late = game.clock >= deadlineOf(game) - 30;
+  panel(c, tx, ty, tw, TALLY_H * u, u);
+  text(c, deadline, tx + tw / 2, ty + 5 * u, u, 5.5, late ? '#ffb340' : '#9fd8ff', 'center');
+  text(c, tally, tx + tw / 2, ty + 16 * u, u, 6, '#ffffff', 'center');
+  text(c, 'N  Recipe book', tx + tw / 2, ty + 28 * u, u, 5, '#e8cf7a', 'center');
+  if (game.roaming) Object.assign(bookHit, { x: tx, y: ty, w: tw, h: TALLY_H * u });
 
   if (game.phase === 'service') drawTicketRail(game, c, u, CW, hud);
 
-  // bottom-left card: basket at the market, pantry in the afternoon, the menu during service
-  if (game.phase === 'market' || game.phase === 'afternoon') drawBasket(game, c, u, pad, CH, hud);
+  // bottom-left card: basket at the market, pantry aboard and in prep, the menu during service
+  if (game.phase === 'market' || game.phase === 'aboard' || game.phase === 'prep') drawBasket(game, c, u, pad, CH, hud);
   else if (game.phase === 'service') drawMenuCard(game, c, u, pad, CH, hud);
 
   // hands slot
@@ -837,14 +848,18 @@ function drawTicketRail(game: Game, c: CanvasRenderingContext2D, u: number, CW: 
     c.textAlign = 'center';
     c.textBaseline = 'top';
     c.fillStyle = '#2b3a55';
-    c.fillText(pending ? 'coming' : `#${t.table}`, x + tw / 2, y + 18 * u);
+    c.fillText(pending ? 'coming' : t.guest ? t.guest.split(' ').pop()!.slice(0, 7) : `#${t.table}`, x + tw / 2, y + 18 * u);
     if (!pending) {
       const f = t.state === 'taken' ? 1 : t.patience / t.max;
-      const col = t.state === 'taken' ? '#5fcf7a' : f > 0.5 ? '#5fcf7a' : f > 0.25 ? '#f5c542' : Math.floor(game.time * 6) % 2 ? '#ff5a5a' : '#a02020';
+      const col = t.state === 'taken' ? '#5fcf7a' : '#e3b54a';
       c.fillStyle = '#3a3f55';
       c.fillRect(x + 2 * u, y + 26 * u, tw - 4 * u, 2 * u);
       c.fillStyle = col;
       c.fillRect(x + 2 * u, y + 26 * u, Math.max(u, (tw - 4 * u) * f), 2 * u);
+    }
+    if (t.guest && !pending) {
+      c.fillStyle = '#ff9ec7';
+      c.fillRect(x, y + 3 * u, 3 * u, 3 * u);
     }
     if (t.state === 'taken') {
       c.fillStyle = '#2f9a4a';
@@ -860,7 +875,7 @@ function drawTicketRail(game: Game, c: CanvasRenderingContext2D, u: number, CW: 
 }
 
 function drawBasket(game: Game, c: CanvasRenderingContext2D, u: number, pad: number, CH: number, hud: HudLayout) {
-  const items = INGREDIENTS.filter((i) => game.count(i.id));
+  const items = [...[...game.stock.keys()].filter((id) => id.startsWith('prep:')).map((id) => ({ id })), ...INGREDIENTS.filter((i) => game.count(i.id))];
   const cols = hud.cardCols;
   const w = hud.cardW * u;
   const h = hud.cardH * u;
@@ -1200,7 +1215,7 @@ function drawSummary(game: Game, c: CanvasRenderingContext2D, u: number, CW: num
   c.fillStyle = 'rgba(12,20,40,0.75)';
   c.fillRect(0, 0, CW, CH);
   const w = Math.min(CW - 12 * u, 300 * u);
-  const h = Math.min(CH - 12 * u, 184 * u);
+  const h = Math.min(CH - 12 * u, 208 * u);
   const x = CW / 2 - w / 2;
   const y = CH / 2 - h / 2;
   panel(c, x, y, w, h, u, 'rgba(29,29,43,0.96)');
@@ -1210,7 +1225,7 @@ function drawSummary(game: Game, c: CanvasRenderingContext2D, u: number, CW: num
   for (let i = 0; i < 5; i++) star(c, CW / 2 + (i - 2) * sr * 2.3, y + 36 * u, sr, Math.max(0, Math.min(1, stars - i)));
   text(c, `${stars.toFixed(1)} stars`, CW / 2, y + 50 * u, u, 6.5, '#ffffff', 'center');
 
-  const parts: [string, number][] = r ? [['Menu', r.menu], ['Speed', r.speed], ['Guests fed', r.completion], ['Waiters', r.staff]] : [];
+  const parts: [string, number][] = r ? [['Plates', r.plates], ['Variety', r.variety], ['Favourites', r.favourites], ['Guests fed', r.fed], ['Speed', r.speed], ['Waiters', r.staff]] : [];
   const bx = x + 16 * u;
   const bw = w - 32 * u;
   parts.forEach(([label, v], i) => {
@@ -1225,13 +1240,13 @@ function drawSummary(game: Game, c: CanvasRenderingContext2D, u: number, CW: num
   });
   const profit = game.money - BUDGET;
   const lines = [
-    `Served ${game.served}   Left hungry ${game.missed}   Served slop ${game.grumbles}`,
+    `Served ${game.served}   Sent home ${game.missed}   Slop ${game.grumbles}   Favourites ${game.favouritesServed}/${game.regularsTonight.size}`,
     plateLine(game),
     `Spent today ${game.spent}g   Earned at dinner ${game.earned}g`,
     `${profit >= 0 ? 'Profit' : 'Loss'} ${Math.abs(profit)}g   Purse ${game.money}g`,
     `The Butter Moon sails through the night toward ${NEXT_PORT.name}.`,
   ];
-  let ly = y + 116 * u;
+  let ly = y + 140 * u;
   for (const l of lines) {
     for (const part of wrap(c, l, w - 16 * u, u, 5.5)) {
       text(c, part, CW / 2, ly, u, 5.5, '#ffffff', 'center');

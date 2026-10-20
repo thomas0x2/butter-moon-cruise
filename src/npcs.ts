@@ -42,7 +42,7 @@ export const NPCS: NpcDef[] = [
   { name: 'Mr. Okafor', map: 'lido', x: 20.5, y: 13.5, stroll: true, look: makeLook('sunhat', { w: '#ff7a59', g: '#d4573a', s: '#8d5524', S: '#6b3e18' }),
     lines: ['I came to Marseille for one thing: bouillabaisse.', 'If it is on the menu tonight, I will order two.'] },
   { name: 'Lucia', map: 'lido', x: 12.5, y: 11.5, stroll: true, look: makeLook('bun', { w: '#5fcf7a', g: '#3c9c55', h: '#121212' }),
-    lines: ['Tomorrow is Naples! I grew up two streets from the best pizzeria in the world.', 'Tonight though, I want something French. Something with butter.'] },
+    lines: ['Tomorrow is Naples! I grew up two streets from the best pizzeria in the world.', 'Tonight though, I want something French. A tarte au citron, all lemon and butter. That is my favourite.'] },
   { name: 'Theo', map: 'lido', x: 28.5, y: 9.5, stroll: true, look: makeLook('short', { w: '#f5c542', g: '#cc9c1f', h: '#c9a14a', s: '#ffdbac', S: '#e8b98a' }),
     lines: ['Are you the chef? Can you make croissants?', 'Flour, butter, eggs. Mum says that is all it is, but it is magic.'] },
 
@@ -54,11 +54,11 @@ export const NPCS: NpcDef[] = [
 
   // Restaurant
   { name: 'Henri', map: 'restaurant', x: 11.5, y: 7.5, facing: 'down', look: makeLook('short', { ...WAITER, r: '#c8323e', h: '#5a3825' }),
-    lines: ['I am Henri, maitre d\'. Tonight is a full house.', 'During service you stay in the galley, chef. My waiters bring the tickets to the pass and carry your plates out. Better waiters, better reviews.'] },
+    lines: ['I am Henri, maitre d\'. Tonight is a full house.', 'During service you stay in the galley, chef. My waiters bring the tickets to the pass and carry your plates out. Nobody here is in a hurry; take your time and cook well.', 'A tip from an old hand: chop and prepare at the cutting board this afternoon. Tonight you just cook and plate.'] },
   { name: 'Sofia', map: 'restaurant', x: 4.5, y: 5.5, stroll: true, look: WAITER_LOOKS[0],
     lines: ['Put each finished plate on the pass window. If it matches a ticket, I take it straight out.'] },
   { name: 'Kenji', map: 'restaurant', x: 17.5, y: 3.5, stroll: true, look: WAITER_LOOKS[1],
-    lines: ['Watch the tickets above the pass. When a bar runs out, the table gives up and leaves.'] },
+    lines: ['The gold bar on each ticket is the tip. Quick plates earn a little extra, but nobody ever leaves hungry on the Butter Moon.'] },
 ];
 
 export const MERCHANT_LOOKS: Record<StallId, Look> = {
@@ -82,10 +82,10 @@ export interface StaffOption {
 const DECKHAND = { w: '#f4f7fa', g: '#c9d3dc', r: '#2d6fb0', b: '#2d3550' };
 
 export const STAFF_OPTIONS: StaffOption[] = [
-  { label: 'Deckhands Paul and Lou', cost: 0, skill: 2, speed: 1.6, blurb: 'Willing, but slow, and they never learned the table numbers.',
+  { label: 'Deckhands Paul and Lou', cost: 0, skill: 2, speed: 2.0, blurb: 'Willing, but slow, and they never learned the table numbers.',
     crew: [{ name: 'Paul', look: makeLook('short', { ...DECKHAND, h: '#a8461f' }) }, { name: 'Lou', look: makeLook('bun', { ...DECKHAND, h: '#2b1b10', s: '#8d5524', S: '#6b3e18' }) }] },
-  { label: 'Sofia and Kenji', cost: 25, skill: 4, speed: 2.6, blurb: 'Seasoned waiters. Quick, polite, never drop a plate.',
+  { label: 'Sofia and Kenji', cost: 25, skill: 4, speed: 2.8, blurb: 'Seasoned waiters. Quick, polite, never drop a plate.',
     crew: [{ name: 'Sofia', look: WAITER_LOOKS[0] }, { name: 'Kenji', look: WAITER_LOOKS[1] }] },
-  { label: "Henri's A-team", cost: 50, skill: 5, speed: 3.4, blurb: 'Silver service from the best restaurant in Lyon.',
+  { label: "Henri's A-team", cost: 50, skill: 5, speed: 3.6, blurb: 'Silver service from the best restaurant in Lyon.',
     crew: [{ name: 'Sofia', look: WAITER_LOOKS[0] }, { name: 'Kenji', look: WAITER_LOOKS[1] }, { name: 'Henri', look: makeLook('short', { ...WAITER, r: '#c8323e', h: '#5a3825' }) }] },
 ];

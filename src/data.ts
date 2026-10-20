@@ -108,6 +108,7 @@ const NAMES = new Map<string, string>([
 ]);
 
 export function nameOf(id: string): string {
+  if (id.startsWith('prep:')) return `${NAMES.get(id.slice(5)) ?? id} prep`;
   return NAMES.get(id) ?? id;
 }
 
@@ -205,3 +206,22 @@ export const SECRET_SELLERS: Record<string, SecretSeller> = {
     },
   },
 };
+
+// ------------------------------------------------------------ regulars
+
+/** Passengers who dine every night and have a favourite dish. They tell you what it is if you chat with them in the afternoon. */
+export const REGULARS: { name: string; dish: string }[] = [
+  { name: 'Mr. Okafor', dish: 'bouillabaisse' },
+  { name: 'Mrs. Lindqvist', dish: 'grilled' },
+  { name: 'Theo', dish: 'croissant' },
+  { name: 'Lucia', dish: 'tarte' },
+];
+
+/** Prepared ahead in the afternoon: everything for one plate, chopped and ready. */
+export const PREP = 'prep:';
+export function isPrep(id: string | null): boolean {
+  return !!id && id.startsWith(PREP);
+}
+export function prepOf(id: string): Recipe | undefined {
+  return isPrep(id) ? recipe(id.slice(PREP.length)) : undefined;
+}

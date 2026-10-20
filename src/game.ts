@@ -1,16 +1,20 @@
 // Game state and rules for one leg of the cruise:
-// Marseille market -> afternoon aboard (roam, talk, plan the menu, hire staff) -> dinner service -> Naples.
+// Marseille market (until 1 pm) -> free time aboard (until 3) -> kitchen prep (until 6) -> dinner service -> Naples.
 
 import { CHEF_LOOK, randomLook, type Dir, type Item, type Look } from './art';
 import {
   BASKET_SIZE, BUDGET, BURNT, ingredient, INGREDIENTS, isSubset, machineLevel, matchRecipe, MENU_SIZE, nameOf, NEXT_PORT, recipe,
-  cueFor, GRADE_NAMES, RECIPES, rollGrade, SECRET_SELLERS, SLOP, STALLS, UPGRADES, type Machine, type Recipe, type SecretSeller, type StallId,
+  cueFor, GRADE_NAMES, isPrep, prepOf, PREP, RECIPES, rollGrade, SECRET_SELLERS, SLOP, STALLS, UPGRADES, REGULARS, type Machine, type Recipe, type SecretSeller, type StallId,
 } from './data';
 import { CABIN, charAt, doorAt, GALLEY, isSolid, LIDO, LOBBY, MAPS, MARKET, type Door, type MapId, type TileMap } from './map';
 import { MERCHANT_LOOKS, NPCS, STAFF_OPTIONS, type NpcDef, type StaffOption } from './npcs';
 import { sfx } from './sound';
 
-export type Phase = 'title' | 'market' | 'afternoon' | 'service' | 'summary' | 'arrival';
+/**
+ * A port day: morning ashore (market, old town) until the all-aboard horn, then the ship until kitchen prep,
+ * afternoon prep in the galley, evening dinner service. The clock is what limits exploring.
+ */
+export type Phase = 'title' | 'market' | 'aboard' | 'prep' | 'service' | 'summary' | 'arrival';
 
 export interface Station {
   kind: Machine;
@@ -51,6 +55,8 @@ export interface Ticket {
   served?: string;
   quality?: number;
   freshness?: number;
+  /** a regular passenger, who orders their favourite when it is on the menu */
+  guest?: string;
 }
 
 export interface PassSlot {
@@ -143,9 +149,13 @@ export interface Fishing {
 
 export interface Rating {
   stars: number;
-  menu: number;
+  /** how good the plates were: ingredients, machines, the dishes themselves */
+  plates: number;
+  variety: number;
+  /** regulars who got their favourite */
+  favourites: number;
+  fed: number;
   speed: number;
-  completion: number;
   staff: number;
 }
 
@@ -156,12 +166,14 @@ const STRIP_Y = [1.7, 2.5];
 const PASS_Y = 2.6;
 
 export const MARKET_OPEN = 8 * 60;
-export const AFTERNOON = 13 * 60;
-const AFTERNOON_CAP = 17 * 60 + 55;
+/** the ship's horn: everyone back on board */
+export const ALL_ABOARD = 13 * 60;
+/** the chef is due in the galley */
+export const PREP_START = 15 * 60;
 export const SERVICE_START = 18 * 60;
 export const SERVICE_END = 23 * 60;
 const LAST_SEATING = 22 * 60 + 15;
-const MINUTES_PER_SECOND: Partial<Record<Phase, number>> = { market: 0.5, afternoon: 2, service: 1.5 };
+const MINUTES_PER_SECOND: Partial<Record<Phase, number>> = { market: 2, aboard: 2, prep: 1, service: 1.5 };
 const MAX_TICKETS = 6;
 
 const rand = Math.random;
@@ -221,6 +233,8 @@ export class Game {
   earned = 0;
   served = 0;
   missed = 0;
+  favouritesServed = 0;
+  regularsTonight = new Set<string>();
   grumbles = 0;
   rating: Rating | null = null;
   spawnIn = 3;
@@ -312,7 +326,7 @@ export class Game {
   }
 
   get roaming() {
-    return this.phase === 'market' || this.phase === 'afternoon' || this.phase === 'service';
+    return this.phase === 'market' || this.phase === 'aboard' || this.phase === 'prep' || this.phase === 'service';
   }
 
   blocked(x: number, y: number, r: number): boolean {
@@ -360,8 +374,8 @@ export class Game {
   }
 
   private useDoor(door: Door) {
-    if (this.phase === 'service' && this.map === GALLEY) {
-      this.toast('Service is on! Stay in the galley; the waiters handle the dining room.');
+    if ((this.phase === 'service' || this.phase === 'prep') && this.map === GALLEY) {
+      this.toast(this.phase === 'prep' ? 'Prep time. The galley needs you until service.' : 'Service is on! Stay in the galley; the waiters handle the dining room.');
       return false;
     }
     this.warp = { door, t: 0, swapped: false };
@@ -369,13 +383,33 @@ export class Game {
     return true;
   }
 
-  private board() {
-    this.phase = 'afternoon';
-    this.clock = AFTERNOON;
+  private reminded = new Set<number>();
+
+  /** One toast when the clock passes a time today. */
+  private remind(at: number, text: string) {
+    if (this.clock < at || this.reminded.has(at)) return;
+    this.reminded.add(at);
+    this.toast(text);
+    sfx('bell');
+  }
+
+  /** 3 pm: the chef is called to the galley for menu planning and mise en place. */
+  private startPrep() {
+    this.phase = 'prep';
+    this.clock = Math.max(this.clock, PREP_START);
+    this.modal = null;
+    this.hands = null;
+    if (this.map !== GALLEY) this.warp = { door: { x: 0, y: 0, to: 'galley', sx: 9.5, sy: 9.0, dir: 'up' }, t: 0, swapped: false };
+    this.toast('3 pm, kitchen prep. Plan the menu at the chalkboard and prep at the cutting board.');
+    sfx('bell');
+  }
+
+  private board(late = false) {
+    this.phase = 'aboard';
     this.hands = null;
     this.modal = null;
     this.enterMap(LOBBY, 10.9, 10.3, 'up');
-    this.toast('All aboard! You have the afternoon. Dinner is at 6 in the galley.');
+    this.toast(late ? "The ship's horn! The purser hurries you up the gangway." : 'All aboard! Explore the ship until 3 pm, then the galley needs you.');
     sfx('start');
   }
 
@@ -408,20 +442,22 @@ export class Game {
     sfx('start');
   }
 
+  /** Stars reward care: good plates, a varied menu, regulars' favourites. Speed barely matters. */
   rate(): Rating {
     const done = this.tickets.filter((t) => t.state === 'done');
     const total = done.length + this.tickets.filter((t) => t.state === 'missed').length;
     const real = done.filter((t) => t.served !== SLOP.id);
-    const dishQuality = done.length ? real.reduce((s, t) => s + Math.min(1, (0.45 + recipe(t.served!)!.price / 90) * this.quality(t.served!) * this.plateFactor(t.quality ?? 2)), 0) / done.length : 0;
-    const variety = new Set(real.map((t) => t.served)).size / MENU_SIZE;
-    const menu = 0.65 * dishQuality + 0.35 * Math.min(1, variety);
+    const plates = done.length ? real.reduce((s, t) => s + Math.min(1, (0.45 + recipe(t.served!)!.price / 90) * this.quality(t.served!) * this.plateFactor(t.quality ?? 2)), 0) / done.length : 0;
+    const variety = Math.min(1, new Set(real.map((t) => t.served)).size / MENU_SIZE);
+    const favourites = this.regularsTonight.size ? this.favouritesServed / this.regularsTonight.size : 0;
+    const fed = total ? done.length / total : 0;
     const speed = done.length ? done.reduce((s, t) => s + (t.freshness ?? 0), 0) / done.length : 0;
-    const completion = total ? done.length / total : 0;
     const staff = this.staff.skill / 5;
-    const score = total ? 0.3 * menu + 0.25 * speed + 0.25 * completion + 0.2 * staff : 0;
+    const score = total ? 0.4 * plates + 0.15 * variety + 0.2 * favourites + 0.1 * fed + 0.05 * speed + 0.1 * staff : 0;
     const stars = Math.max(1, Math.min(5, Math.round((1 + 4 * score) * 2) / 2));
-    return { stars, menu, speed, completion, staff };
+    return { stars, plates, variety, favourites, fed, speed, staff };
   }
+
 
   private reset() {
     this.money = BUDGET;
@@ -438,7 +474,8 @@ export class Game {
     this.picks = [];
     this.staff = STAFF_OPTIONS[0];
     this.owned.clear();
-    this.spent = this.earned = this.served = this.missed = this.grumbles = 0;
+    this.spent = this.earned = this.served = this.missed = this.grumbles = this.favouritesServed = 0;
+    this.regularsTonight.clear();
     this.rating = null;
     this.tickets = [];
     this.waiters = [];
@@ -446,6 +483,7 @@ export class Game {
     this.port = 'Marseille';
     this.day = 1;
     this.clock = MARKET_OPEN;
+    this.reminded.clear();
     for (const s of this.stations) Object.assign(s, { items: [], grades: [], recipe: null, t: 0, result: null, resultQ: 2, doneT: 0 });
     for (const p of this.pass) Object.assign(p, { dish: null, q: 2, claimed: false });
     this.phase = 'market';
@@ -470,11 +508,16 @@ export class Game {
     if (!this.roaming) return;
 
     const rate = MINUTES_PER_SECOND[this.phase] ?? 0;
-    if (this.phase === 'market') this.clock = Math.min(12 * 60, this.clock + dt * rate);
-    if (this.phase === 'afternoon') {
-      const before = this.clock;
-      this.clock = Math.min(AFTERNOON_CAP, this.clock + dt * rate);
-      if (before < 17 * 60 + 30 && this.clock >= 17 * 60 + 30) this.toast('Half an hour to dinner. Head to the galley chalkboard.');
+    this.clock += dt * rate;
+    if (this.phase === 'market') {
+      this.remind(ALL_ABOARD - 30, "The ship's horn: all aboard at 1 pm!");
+      if (this.clock >= ALL_ABOARD && !this.warp) this.board(true);
+    } else if (this.phase === 'aboard') {
+      this.remind(PREP_START - 30, 'Half an hour until kitchen prep at 3.');
+      if (this.clock >= PREP_START && !this.warp) this.startPrep();
+    } else if (this.phase === 'prep') {
+      this.remind(SERVICE_START - 30, 'Half an hour until the dining room opens.');
+      if (this.clock >= SERVICE_START && !this.warp) this.openService();
     }
 
     if (!this.modal) this.moveChef(dt, ix, iy);
@@ -482,11 +525,12 @@ export class Game {
     this.target = this.modal ? null : this.findTarget();
 
     if (this.phase === 'service') {
-      this.clock += dt * rate;
       this.updateStations(dt);
       this.updateTickets(dt);
       this.updateWaiters(dt);
-      if (this.clock >= SERVICE_END) this.endService();
+      // the doors close at 11 but the last tables still get their food
+      const waiting = this.tickets.some((t) => t.state === 'open' || t.state === 'pending' || t.state === 'taken');
+      if (this.clock >= SERVICE_END && (!waiting || this.clock >= SERVICE_END + 45)) this.endService();
       else if (this.closingIn > 0) {
         this.closingIn -= dt;
         if (this.closingIn <= 0) this.endService();
@@ -608,7 +652,12 @@ export class Game {
   orderable(): Recipe[] {
     const left = new Map(this.stock);
     const give = (id: string) => left.set(id, (left.get(id) ?? 0) + 1);
+    const givePrep = (id: string, n = 1) => {
+      for (let k = 0; k < n; k++) for (const inp of prepOf(id)!.inputs) give(inp);
+    };
+    for (const [id, n] of this.stock) if (isPrep(id)) givePrep(id, n);
     if (this.hands && ingredient(this.hands)) give(this.hands);
+    if (this.hands && isPrep(this.hands)) givePrep(this.hands);
     const ready: string[] = [];
     if (this.hands && recipe(this.hands)) ready.push(this.hands);
     for (const s of this.stations) {
@@ -630,8 +679,11 @@ export class Game {
     return this.menu.map((id) => recipe(id)!).filter((r) => r.inputs.every((id) => (left.get(id) ?? 0) > 0));
   }
 
-  private outstanding() {
-    return this.tickets.filter((t) => t.state === 'open' || t.state === 'pending' || t.state === 'taken');
+  /** Anything cooking, plated or in hand that could still go out. */
+  private kitchenHasFood() {
+    if (this.hands && this.hands !== BURNT) return true;
+    if (this.pass.some((p) => p.dish)) return true;
+    return this.stations.some((s) => s.recipe || s.items.length || (s.result && s.result !== BURNT));
   }
 
   private updateTickets(dt: number) {
@@ -642,23 +694,26 @@ export class Game {
       const anything = this.basketCount() > 0 || this.pass.some((p) => p.dish && !p.claimed);
       if (open < MAX_TICKETS && (options.length || anything)) {
         // with nothing left on the menu, guests settle for whatever the kitchen has
-        const dish = options.length ? pick(options).id : SLOP.id;
-        this.tickets.push({ id: this.nextTicket++, dish, table: 1 + Math.floor(rand() * 12), patience: 60, max: 60, state: 'pending' });
-      } else if (!options.length && !anything && !this.outstanding().length) {
-        this.toast('The pantry is bare. Closing the kitchen for tonight.');
+        let dish = options.length ? pick(options).id : SLOP.id;
+        // regulars come in early in the evening and ask for their favourite when they can
+        const regular = REGULARS.find((r) => !this.regularsTonight.has(r.name));
+        let guest: string | undefined;
+        if (regular && options.length && rand() < 0.5) {
+          guest = regular.name;
+          this.regularsTonight.add(guest);
+          if (options.some((o) => o.id === regular.dish)) dish = regular.dish;
+        }
+        this.tickets.push({ id: this.nextTicket++, dish, table: 1 + Math.floor(rand() * 12), patience: 90, max: 90, state: 'pending', guest });
+      } else if (!options.length && !anything && !this.kitchenHasFood()) {
+        this.toast('The pantry is bare. Henri sends the last tables home with dessert on the house.');
         this.closingIn = 3;
       }
       this.spawnIn = 7 + rand() * 6;
     }
     for (const t of this.tickets) {
       if (t.state !== 'open') continue;
-      t.patience -= dt;
-      if (t.patience <= 0) {
-        t.state = 'missed';
-        this.missed++;
-        this.toast(`Table ${t.table} gave up waiting for their ${nameOf(t.dish).toLowerCase()}.`);
-        sfx('miss');
-      }
+      // guests never walk out; waiting only shrinks the tip
+      t.patience = Math.max(0, t.patience - dt);
     }
     // send a waiter for every plate on the pass that answers a ticket
     for (const slot of this.pass) {
@@ -756,10 +811,16 @@ export class Game {
       return;
     }
     const r = recipe(dish)!;
-    const pay = Math.round(r.price * this.quality(dish) * this.plateFactor(q)) + Math.round(r.price * 0.5 * (t.freshness ?? 0));
+    const favourite = !!t.guest && REGULARS.find((g) => g.name === t.guest)?.dish === dish;
+    let pay = Math.round(r.price * this.quality(dish) * this.plateFactor(q)) + Math.round(r.price * 0.5 * (t.freshness ?? 0));
+    if (favourite) {
+      pay += Math.round(r.price * 0.5);
+      this.favouritesServed++;
+      this.toast(`${t.guest} got their favourite ${r.name.toLowerCase()}. They are delighted!`);
+    }
     this.money += pay;
     this.earned += pay;
-    this.float(at.x, at.y, q >= 3 ? `+${pay}g  prime!` : `+${pay}g`, q >= 3 ? '#9cf0ff' : '#ffe066');
+    this.float(at.x, at.y, favourite ? `+${pay}g  favourite!` : q >= 3 ? `+${pay}g  prime!` : `+${pay}g`, favourite ? '#ff9ec7' : q >= 3 ? '#9cf0ff' : '#ffe066');
     sfx('coin');
   }
 
@@ -833,7 +894,7 @@ export class Game {
       }
       case 'pantry':
         if (!service) return 'Pantry';
-        if (this.hands && ingredient(this.hands)) return `Put back ${held}`;
+        if (this.hands && (ingredient(this.hands) || isPrep(this.hands))) return `Put back ${held}`;
         return this.hands ? 'Hands full' : 'Open the pantry';
       case 'bin':
         return this.hands ? `Toss ${held}` : 'Bin';
@@ -844,7 +905,7 @@ export class Game {
         const s = t.station;
         if (s.kind === 'oven' && !this.owned.has('oven')) return 'Empty machine slot';
         const name = s.kind === 'stove' ? 'stove' : s.kind === 'board' ? 'board' : s.kind === 'oven' ? 'oven' : 'slop pot';
-        if (!service) return s.kind === 'stove' ? 'Stove' : s.kind === 'board' ? 'Cutting board' : s.kind === 'oven' ? 'Oven' : 'Slop pot';
+        if (!service) return s.kind === 'stove' ? 'Stove' : s.kind === 'board' ? 'Prep for tonight (mise en place)' : s.kind === 'oven' ? 'Oven' : 'Slop pot';
         if (s.result) return this.hands ? 'Hands full' : `Take ${nameOf(s.result).toLowerCase()}`;
         if (s.recipe) return s.kind === 'board' ? 'Chopping...' : 'Cooking...';
         if (this.hands) return `Put in the ${name}`.replace('in the stove', 'on the stove').replace('in the board', 'on the board');
@@ -869,6 +930,7 @@ export class Game {
         this.port = NEXT_PORT.name;
         this.day = 2;
         this.clock = MARKET_OPEN;
+        this.reminded.clear();
         sfx('bell');
         return;
       case 'arrival':
@@ -887,7 +949,7 @@ export class Game {
       case 'locked':
         return this.toast(t.text);
       case 'board':
-        return this.phase === 'afternoon' ? this.openWorkbench() : this.openMenuCard();
+        return this.phase === 'aboard' || this.phase === 'prep' ? this.openWorkbench() : this.openMenuCard();
       case 'catalog':
         return this.openCatalog();
       case 'rod':
@@ -896,7 +958,7 @@ export class Game {
         return this.tendPlanter(t.planter);
       case 'pantry':
         if (this.phase !== 'service') return this.toast('The pantry opens when dinner service starts.');
-        if (this.hands && ingredient(this.hands)) {
+        if (this.hands && (ingredient(this.hands) || isPrep(this.hands))) {
           this.add(this.hands, 1, this.handsQ);
           this.hands = null;
           sfx('place');
@@ -914,7 +976,8 @@ export class Game {
         return this.usePass(t.slot);
       case 'station':
         if (t.station.kind === 'oven' && !this.owned.has('oven')) return this.toast('An oven would fit here. Order one from the catalog in your cabin.');
-        if (this.phase !== 'service') return this.toast('The stoves are lit at 6 when dinner service starts.');
+        if ((this.phase === 'aboard' || this.phase === 'prep') && t.station.kind === 'board') return this.openPrep();
+        if (this.phase !== 'service') return this.toast('The stoves are lit at 6. Prep at the cutting board in the meantime.');
         return this.useStation(t.station);
     }
   }
@@ -989,7 +1052,7 @@ export class Game {
     const dx = this.x - npc.x;
     const dy = this.y - npc.y;
     npc.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
-    const isHenri = npc.def.name === 'Henri' && this.phase === 'afternoon';
+    const isHenri = npc.def.name === 'Henri' && this.phase === 'aboard';
     this.modal = {
       kind: 'talk',
       title: npc.def.name,
@@ -1287,7 +1350,7 @@ export class Game {
           });
         }
         rows.push({
-          label: 'Open the dining room',
+          label: 'Start dinner service now',
           detail: this.menu.length ? this.menu.map(nameOf).join(', ') : 'Only slop tonight?',
           enabled: true,
           action: () => this.openService(),
@@ -1339,7 +1402,7 @@ export class Game {
   }
 
   private openFishing() {
-    if (this.phase !== 'afternoon') return this.toast('No fishing during service, chef.');
+    if (this.phase !== 'aboard') return this.toast('No time for fishing now, chef.');
     const f = this.fishing;
     if (!f.castsLeft) return this.toast('The fish have stopped biting today. Try again tomorrow.');
     this.cast();
@@ -1375,7 +1438,7 @@ export class Game {
   }
 
   private tendPlanter(p: Planter) {
-    if (this.phase !== 'afternoon') return this.toast('The garden can wait until tomorrow afternoon.');
+    if (this.phase !== 'aboard') return this.toast('The garden can wait until tomorrow.');
     if (this.ripe(p)) {
       p.harvestedDay = this.day;
       this.add(p.crop, 1, 3);
@@ -1392,8 +1455,45 @@ export class Game {
     sfx('place');
   }
 
+  /** Mise en place: chop and portion a dish's ingredients in the afternoon so service is just cooking and plating. */
+  private openPrep() {
+    this.modal = {
+      kind: 'list',
+      title: 'Mise en place',
+      subtitle: () => 'Prepare tonight\'s dishes ahead. A prep goes straight on its machine tonight and cooks faster. Each takes 15 minutes.',
+      index: 0,
+      rows: () => {
+        const rows: MenuRow[] = [];
+        if (!this.menu.length) rows.push({ label: 'Put dishes on the menu at the chalkboard first.', heading: true });
+        for (const id of this.menu) {
+          const r = recipe(id)!;
+          const have = r.inputs.every((inp) => this.count(inp) >= r.inputs.filter((x) => x === inp).length);
+          const ready = this.count(PREP + id);
+          rows.push({
+            label: `Prep ${r.name}`,
+            detail: have ? `${r.inputs.map(nameOf).join(' + ')}${ready ? `  (${ready} ready)` : ''}` : `missing ingredients${ready ? `  (${ready} ready)` : ''}`,
+            icon: PREP + id,
+            enabled: have && this.clock < SERVICE_START - 15,
+            action: () => {
+              // the best of each ingredient goes into the prep
+              const qs = r.inputs.map((inp) => this.add(inp, -1, (this.grades.get(inp) ?? [2])[0]));
+              const q = Math.round(qs.reduce((a, b) => a + b, 0) / qs.length);
+              this.add(PREP + id, 1, q);
+              this.clock = Math.min(SERVICE_START - 1, this.clock + 15);
+              sfx('place');
+            },
+          });
+        }
+        const ready = [...this.stock.keys()].filter(isPrep);
+        if (ready.length) rows.push({ label: `Ready: ${ready.map((id) => `${this.count(id)} ${nameOf(id).replace(' prep', '').toLowerCase()}`).join(', ')}`, heading: true });
+        rows.push({ label: 'Done for now', enabled: true, action: () => this.cancel() });
+        return rows;
+      },
+    };
+  }
+
   private openCatalog() {
-    if (this.phase !== 'afternoon') return this.toast('The chandler only takes orders while we are in port waters.');
+    if (this.phase !== 'aboard') return this.toast('The chandler only takes orders in the morning.');
     this.modal = {
       kind: 'list',
       title: "Ship chandler's catalog",
@@ -1448,6 +1548,26 @@ export class Game {
       index: 0,
       rows: () => {
         const rows: MenuRow[] = [];
+        for (const id of [...this.stock.keys()].filter(isPrep)) {
+          const grades = this.grades.get(id) ?? [];
+          for (const g of [3, 2, 1]) {
+            const n = grades.filter((x) => x === g).length;
+            if (!n) continue;
+            rows.push({
+              label: `${nameOf(id)}  ${GRADE_NAMES[g]}`,
+              detail: `x${n}`,
+              icon: id,
+              grade: g,
+              enabled: true,
+              action: () => {
+                this.handsQ = this.add(id, -1, g);
+                this.hands = id;
+                this.modal = null;
+                sfx('pick');
+              },
+            });
+          }
+        }
         for (const ing of INGREDIENTS) {
           const grades = this.grades.get(ing.id) ?? [];
           for (const g of [3, 2, 1]) {
@@ -1511,6 +1631,18 @@ export class Game {
         this.handsQ = s.grades.pop() ?? 2;
         sfx('pick');
       }
+      return;
+    }
+    const prepped = prepOf(this.hands);
+    if (prepped) {
+      if (s.kind !== prepped.at) return this.toast(`That prep goes on the ${prepped.at}.`);
+      if (s.items.length) return this.toast('Clear the station first.');
+      s.items = [this.hands];
+      s.grades = [this.handsQ];
+      this.hands = null;
+      this.startCooking(s, prepped);
+      s.dur *= 0.6; // the chopping is already done
+      sfx('place');
       return;
     }
     if (!ingredient(this.hands)) return this.toast('Plates go on the pass window. Burnt food goes in the bin.');

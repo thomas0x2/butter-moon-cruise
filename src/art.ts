@@ -187,9 +187,29 @@ const iconCache = new Map<string, HTMLCanvasElement>();
 export function icon(item: Item): HTMLCanvasElement {
   let c = iconCache.get(item);
   if (!c) {
-    c = paint(...(ICONS[item] ?? ICONS.burnt));
+    c = item.startsWith('prep:') ? prepIcon(item.slice(5)) : paint(...(ICONS[item] ?? ICONS.burnt));
     iconCache.set(item, c);
   }
+  return c;
+}
+
+/** A plate's worth of chopped ingredients on a little board, coloured like the finished dish. */
+function prepIcon(dish: string): HTMLCanvasElement {
+  const src = icon(dish).getContext('2d')!.getImageData(0, 0, 8, 8).data;
+  const cols: string[] = [];
+  for (let i = 0; i < src.length; i += 4) {
+    if (src[i + 3] > 0 && (src[i] + src[i + 1] + src[i + 2]) > 150) cols.push(`rgb(${src[i]},${src[i + 1]},${src[i + 2]})`);
+  }
+  const [c, g] = makeCanvas(8, 8);
+  g.fillStyle = '#5a3a1e';
+  g.fillRect(0, 4, 8, 4);
+  g.fillStyle = '#c9955d';
+  g.fillRect(0, 4, 8, 3);
+  const spots: [number, number, number][] = [[1, 2, 2], [4, 1, 2], [2, 4, 2], [5, 3, 2], [6, 5, 1]];
+  spots.forEach(([x, y, w], i) => {
+    g.fillStyle = cols.length ? cols[(i * 7) % cols.length] : '#e8e0d0';
+    g.fillRect(x, y, w, 2);
+  });
   return c;
 }
 
